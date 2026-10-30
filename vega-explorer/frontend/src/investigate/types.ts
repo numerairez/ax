@@ -30,7 +30,9 @@ export interface LeadView {
   type: 'breakdown' | 'trend' | 'driver' | 'change'
   field: string
   rows: Record<string, unknown>[]
-  mode?: 'overview' | 'share' | 'mean'
+  mode?: 'overview' | 'share' | 'mean' | 'like'
+  xTitle?: string
+  expectedTitle?: string
   highlight?: string
   grain?: string
   restLabel?: string

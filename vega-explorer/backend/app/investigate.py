@@ -216,6 +216,10 @@ class Engine:
             lead = self._breakdown_vs_bg(d, sel, g, n_by) if self.has_bg and not child else self._breakdown_overview(d, g, n_by)
             if not lead:
                 continue
+            like = self._like_for_like(d, sel) if self.has_bg and not child and self.agg == "sum" and self.measure != COUNT else None
+            if like:
+                out.append(like)
+                self._flag_mix(lead, like)
             parent = self.meta[d].get("parent")
             if self.last and self.last["op"] == "eq" and parent == self.last["field"]:
                 lead["bonus"] += 0.2
@@ -226,10 +230,12 @@ class Engine:
         return out
 
     def _descends_from_filter(self, d: str) -> bool:
-        eq = {f["field"] for f in self.filters if f["op"] == "eq"}
+        # Only the last filter matters: the comparison group shares all the earlier ones.
+        if not self.last or self.last["op"] != "eq":
+            return False
         p = self.meta[d].get("parent")
         while p:
-            if p in eq:
+            if p == self.last["field"]:
                 return True
             p = self.meta.get(p, {}).get("parent")
         return False
@@ -291,6 +297,78 @@ class Engine:
         rows = [{"value": str(k), "actual": g[k], "expected": expected.get(k), "n": n_by[k]} for k in order]
         return self._lead("breakdown", d, f"{self.mlabel} by {d}", reason, score, p,
                           {"type": "breakdown", "field": d, "mode": mode, "rows": rows, "highlight": str(v)})
+
+    def _like_for_like(self, d: str, sel: pd.DataFrame) -> dict | None:
+        """Each value against the same value elsewhere, per record: a share can differ
+        just because the selection holds a different mix, so compare like with like."""
+        bg = self.bg[self.bg[d].notna()]
+        a_by = sel.groupby(d, observed=True)[self.col]
+        b_by = bg.groupby(d, observed=True)[self.col]
+        a_mean, b_mean = a_by.mean(), b_by.mean()
+        a_n, b_n = a_by.size(), b_by.size()
+        both = [k for k in a_mean.index if a_n.get(k, 0) >= 3 and b_n.get(k, 0) >= 3]
+        if not both:
+            return None
+        comp = {}
+        for k in both:
+            a, b = sel.loc[sel[d] == k, self.col], bg.loc[bg[d] == k, self.col]
+            sd = pd.concat([a, b]).std() or 1
+            comp[k] = ((a.mean() - b.mean()) / sd, _welch_p(a, b))
+        self.tests += len(comp)
+        k = max(comp, key=lambda x: abs(comp[x][0]))
+        eff, p = comp[k]
+        ratio = a_mean[k] / b_mean[k] if b_mean[k] else float("nan")
+        unit = f"avg {self.measure} per record"
+        if p is not None and p < 0.05:
+            how = f"{ratio:.1f}×" if ratio == ratio and ratio > 0 else f"{eff:+.1f} SD"
+            reason = f"Like-for-like, {k} averages {fmt(a_mean[k])} per record here vs {fmt(b_mean[k])} for {k} {self.bg_label} ({how})"
+        else:
+            reason = (f"Like-for-like, no {d} is clearly different from the same {d} {self.bg_label}; the largest gap, "
+                      f"{k} ({fmt(a_mean[k])} vs {fmt(b_mean[k])} per record), could be noise")
+        # Weight the effect by how much of the selection that value carries.
+        weight = float(sel.loc[sel[d] == k, self.col].abs().sum() / (sel[self.col].abs().sum() or 1))
+        score = min(1.0, abs(eff) / 0.8) * (0.5 + 0.5 * min(1.0, weight * 2))
+        order = sel.groupby(d, observed=True)[self.col].sum().abs().sort_values(ascending=False).index
+        rows = [{"value": str(x), "actual": a_mean[x], "expected": b_mean.get(x), "n": a_n[x], "nb": b_n.get(x, 0)} for x in order if x in a_mean.index][:25]
+        lead = self._lead("breakdown", d, f"{d} like-for-like: {unit}", reason, score, p,
+                          {"type": "breakdown", "field": d, "mode": "like", "rows": rows, "highlight": str(k),
+                           "xTitle": unit.capitalize(), "expectedTitle": f"same {d} {self.bg_label}"})
+        lead["id"] = f"like:{d}"
+        lead["tags"].append("like-for-like")
+        lead["like"] = {str(x): comp[x] for x in comp}
+        return lead
+
+    def _flag_mix(self, lead: dict, like: dict) -> None:
+        """A share lead whose standout value is no different like-for-like is a mix effect."""
+        comp = like.pop("like")
+        v = lead["view"].get("highlight")
+        share = next((r for r in lead["view"]["rows"] if r["value"] == v), None)
+        if lead["view"].get("mode") != "share" or share is None:
+            return
+        if v not in comp:
+            if like["view"]["rows"] and not any(r["value"] == v and r["nb"] for r in like["view"]["rows"]):
+                lead["reason"] += f". Nothing {self.bg_label} has {v}, so there is no like-for-like comparison"
+            return
+        eff, p = comp[v]
+        row = next(r for r in like["view"]["rows"] if r["value"] == v)
+        a, b = row["actual"], row["expected"]
+        ratio = a / b if b else float("nan")
+        per = f"{fmt(a)} vs {fmt(b)} per record"
+        # Does like-for-like point the same way as the share gap?
+        same_way = (a > b) == (share["actual"] >= (share.get("expected") or 0))
+        if abs(eff) < 0.2 or 0.8 <= ratio <= 1.25:
+            lead["reason"] += f". That is mix, not performance: like-for-like, {v} is in line with {v} {self.bg_label} ({per})"
+        elif not same_way:
+            word = "lower" if a < b else "higher"
+            lead["reason"] += f". That is mix: like-for-like, {v} is actually {word} than {v} {self.bg_label} ({per})"
+        elif p is not None and p < 0.05:
+            lead["reason"] += f", and not just mix: like-for-like it is {ratio:.1f}× ({per})" if ratio > 0 else f", and not just mix ({per})"
+            return
+        else:
+            lead["reason"] += f". Like-for-like it is also {'higher' if a > b else 'lower'} ({per}), but on too few records to rule out mix"
+            return
+        lead["score"] *= 0.35
+        lead["tags"].append("mix effect")
 
     def trend(self) -> list[dict]:
         if not self.st.get("timeField"):
@@ -435,12 +513,17 @@ class Engine:
                 lead["tags"].append("seen")
             lead["rank"] = lead["score"] * factor + lead.pop("bonus")
         leads.sort(key=lambda x: x["rank"], reverse=True)
-        # Keep the menu varied: at most 3 leads of any one kind.
+        # Keep the menu varied: at most 3 leads of any one kind, but always offer
+        # the next level down the hierarchy, which is where a click naturally leads.
         per_kind: dict[str, int] = {}
         varied = []
         for lead in leads:
-            per_kind[lead["kind"]] = per_kind.get(lead["kind"], 0) + 1
-            if per_kind[lead["kind"]] <= 3:
+            if "drill down" in lead["tags"]:
+                varied.append(lead)
+                continue
+            kind = lead["id"].split(":")[0]  # like-for-like leads get their own quota
+            per_kind[kind] = per_kind.get(kind, 0) + 1
+            if per_kind[kind] <= 3:
                 varied.append(lead)
         leads = varied
         caution = f"Only {len(self.sel)} records in this selection — treat patterns with care." if len(self.sel) < 30 else None

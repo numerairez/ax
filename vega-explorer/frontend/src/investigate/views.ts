@@ -31,28 +31,71 @@ export function periodLabel(iso: string, grain = 'month'): string {
   return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
-export function buildSpec(lead: Lead, measureLabel: string, width: number): Record<string, unknown> {
+/** How a chart is drawn inside the story: `picked` is the gesture that led to the next step, kept visible. */
+export interface ViewOpts {
+  picked?: Filter | null
+  compact?: boolean
+}
+
+export function buildSpec(lead: Lead, measureLabel: string, width: number, opts: ViewOpts = {}): Record<string, unknown> {
   const v = lead.view
+  const picked = opts.picked?.field === v.field ? opts.picked : null
   switch (v.type) {
     case 'breakdown':
-      return breakdown(v, measureLabel, width)
+      return breakdown(v, measureLabel, width, picked)
     case 'trend':
-      return trend(v, measureLabel, width)
+      return trend(v, measureLabel, width, picked, opts.compact)
     case 'driver':
-      return driver(v, width)
+      return driver(v, width, picked, opts.compact)
     case 'change':
-      return change(v, measureLabel, width)
+      return change(v, measureLabel, width, picked)
   }
 }
 
-function breakdown(v: LeadView, label: string, width: number) {
+/** Dim everything but the bar that was followed, and label it. */
+function pickedBar(picked: Filter | null, x: string) {
+  if (!picked) return { opacity: [], layers: [] }
+  const test = `datum.value === ${JSON.stringify(picked.value)}`
+  return {
+    opacity: [{ opacity: { condition: { test, value: 1 }, value: 0.28 } }],
+    layers: [
+      {
+        transform: [{ filter: test }],
+        mark: { type: 'text', align: 'left', dx: 6, fontWeight: 700, color: ALERT, text: 'followed ↓' },
+        encoding: { x: { field: x, type: 'quantitative' } },
+      },
+    ],
+  }
+}
+
+/** Shade the range that was brushed or clicked. */
+function pickedRange(picked: Filter | null, type: 'temporal' | 'quantitative') {
+  if (!picked || picked.op !== 'range') return []
+  const [a, b] = picked.value as [string | number, string | number]
+  const datum = { data: { values: [{ a, b }] } }
+  if (a === b)
+    return [
+      { ...datum, mark: { type: 'rule', color: ALERT, strokeWidth: 2 }, encoding: { x: { field: 'a', type } } },
+      { ...datum, mark: { type: 'text', color: ALERT, fontWeight: 700, dy: -6, y: 0, text: 'followed ↓' }, encoding: { x: { field: 'a', type } } },
+    ]
+  return [
+    { ...datum, mark: { type: 'rect', color: ALERT, opacity: 0.12 }, encoding: { x: { field: 'a', type }, x2: { field: 'b' } } },
+    { ...datum, mark: { type: 'text', color: ALERT, fontWeight: 700, align: 'left', dx: 4, y: 0, dy: 10, text: 'followed ↓' }, encoding: { x: { field: 'a', type } } },
+  ]
+}
+
+function breakdown(v: LeadView, label: string, width: number, picked: Filter | null) {
   const withExpected = v.mode !== 'overview'
+  const pick = pickedBar(picked, 'actual')
+  const like = v.mode === 'like'
+  const [more, less] = like ? ['higher than elsewhere', 'lower than elsewhere'] : ['more than expected', 'less than expected']
+  const xTitle = v.xTitle ?? label
   return {
     $schema: SCHEMA,
     width,
     height: { step: 22 },
     data: { values: v.rows },
-    transform: withExpected ? [{ calculate: 'datum.actual >= datum.expected ? "more than expected" : "less than expected"', as: 'vs' }] : [],
+    transform: withExpected ? [{ calculate: `datum.actual >= datum.expected ? ${JSON.stringify(more)} : ${JSON.stringify(less)}`, as: 'vs' }] : [],
     encoding: {
       y: { field: 'value', type: 'nominal', sort: null, title: v.field, axis: { labelLimit: 160 } },
     },
@@ -60,17 +103,19 @@ function breakdown(v: LeadView, label: string, width: number) {
       {
         mark: { type: 'bar', cornerRadiusEnd: 3, cursor: 'pointer', tooltip: true },
         encoding: {
-          x: { field: 'actual', type: 'quantitative', title: label },
+          x: { field: 'actual', type: 'quantitative', title: xTitle },
           color: withExpected
-            ? { field: 'vs', type: 'nominal', scale: { domain: ['more than expected', 'less than expected'], range: [ACCENT, UNDER] }, legend: { orient: 'bottom', title: null } }
+            ? { field: 'vs', type: 'nominal', scale: { domain: [more, less], range: [ACCENT, UNDER] }, legend: { orient: 'bottom', title: like ? '│ = same value elsewhere' : null } }
             : { value: ACCENT },
           stroke: { condition: { test: `datum.value === ${JSON.stringify(v.highlight ?? null)}`, value: ALERT }, value: null },
           strokeWidth: { value: 2.5 },
+          ...pick.opacity[0],
           tooltip: [
             { field: 'value', title: v.field },
-            { field: 'actual', format: ',.3~s', title: label },
-            ...(withExpected ? [{ field: 'expected', format: ',.3~s', title: 'expected (like the rest)' }] : []),
+            { field: 'actual', format: ',.3~s', title: like ? 'here' : label },
+            ...(withExpected ? [{ field: 'expected', format: ',.3~s', title: v.expectedTitle ?? 'expected (like the rest)' }] : []),
             { field: 'n', title: 'records' },
+            ...(like ? [{ field: 'nb', title: 'records elsewhere' }] : []),
           ],
         },
       },
@@ -82,17 +127,18 @@ function breakdown(v: LeadView, label: string, width: number) {
             },
           ]
         : []),
+      ...pick.layers,
     ],
   }
 }
 
-function trend(v: LeadView, label: string, width: number) {
+function trend(v: LeadView, label: string, width: number, picked: Filter | null, compact?: boolean) {
   const x = { field: 't', type: 'temporal', title: null }
   const hasRest = v.rows.some((r) => r.rest != null)
   return {
     $schema: SCHEMA,
     width,
-    height: 300,
+    height: compact ? 170 : 300,
     data: { values: v.rows },
     encoding: { x },
     layer: [
@@ -132,15 +178,16 @@ function trend(v: LeadView, label: string, width: number) {
             },
           ]
         : []),
+      ...pickedRange(picked, 'temporal'),
     ],
   }
 }
 
-function driver(v: LeadView, width: number) {
+function driver(v: LeadView, width: number, picked: Filter | null, compact?: boolean) {
   return {
     $schema: SCHEMA,
     width,
-    height: 260,
+    height: compact ? 160 : 260,
     data: { values: v.rows },
     layer: [
       {
@@ -161,28 +208,36 @@ function driver(v: LeadView, width: number) {
           color: { field: 'group', type: 'nominal', scale: { domain: ['selection', 'rest'], range: [ACCENT, UNDER] } },
         },
       },
+      ...pickedRange(picked, 'quantitative'),
     ],
   }
 }
 
-function change(v: LeadView, label: string, width: number) {
+function change(v: LeadView, label: string, width: number, picked: Filter | null) {
+  const pick = pickedBar(picked, 'delta')
   return {
     $schema: SCHEMA,
     width,
     height: { step: 22 },
     data: { values: v.rows },
-    mark: { type: 'bar', cornerRadiusEnd: 3, cursor: 'pointer' },
-    encoding: {
-      y: { field: 'value', type: 'nominal', sort: null, title: v.field },
-      x: { field: 'delta', type: 'quantitative', title: `Change in ${label.toLowerCase()} vs the ${v.span}` },
-      color: { condition: { test: 'datum.delta >= 0', value: '#2f9e6b' }, value: ALERT },
-      tooltip: [
-        { field: 'value', title: v.field },
-        { field: 'before', format: ',.3~s' },
-        { field: 'after', format: ',.3~s' },
-        { field: 'delta', format: '+,.3~s' },
-      ],
-    },
+    encoding: { y: { field: 'value', type: 'nominal', sort: null, title: v.field } },
+    layer: [
+      {
+        mark: { type: 'bar', cornerRadiusEnd: 3, cursor: 'pointer' },
+        encoding: {
+          x: { field: 'delta', type: 'quantitative', title: `Change in ${label.toLowerCase()} vs the ${v.span}` },
+          color: { condition: { test: 'datum.delta >= 0', value: '#2f9e6b' }, value: ALERT },
+          ...pick.opacity[0],
+          tooltip: [
+            { field: 'value', title: v.field },
+            { field: 'before', format: ',.3~s' },
+            { field: 'after', format: ',.3~s' },
+            { field: 'delta', format: '+,.3~s' },
+          ],
+        },
+      },
+      ...pick.layers,
+    ],
   }
 }
 

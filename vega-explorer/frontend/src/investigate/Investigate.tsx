@@ -6,6 +6,8 @@ import { StructureSetup } from './StructureSetup.tsx'
 import { COUNT, type Filter, type Gesture, type Lead, type Step, type Structure } from './types.ts'
 import { autoGesture, buildSpec, fmt, localIso, periodLabel } from './views.ts'
 
+type Pending = { stepId: number; g: Gesture }
+
 const KIND_ICON: Record<Lead['kind'], string> = { breakdown: '▤', trend: '〜', driver: '⇄', change: '±' }
 const HINT: Record<Lead['kind'], string> = {
   breakdown: 'Click a bar to follow that lead.',
@@ -23,12 +25,13 @@ export function Investigate({ meta }: { meta: DatasetMeta }) {
   const [tests, setTests] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [pending, setPending] = useState<Gesture | null>(null)
+  const [pending, setPending] = useState<Pending | null>(null)
   const [pilot, setPilot] = useState(false)
   const testsRef = useRef(0)
   const nextId = useRef(1)
   const stepsRef = useRef<Step[]>([])
   const pilotRef = useRef(false)
+  const storyEnd = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     stepsRef.current = steps
@@ -109,7 +112,11 @@ export function Investigate({ meta }: { meta: DatasetMeta }) {
   }, [structure, editing, start])
 
   const current = steps.find((s) => s.id === currentId) ?? null
-  const lead = current?.res.leads.find((l) => l.id === current.leadId) ?? current?.res.leads[0] ?? null
+
+  // Bring the newest chart into view; earlier ones stay above it.
+  useEffect(() => {
+    if (currentId != null || loading) storyEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  }, [currentId, loading])
 
   const follow = (g: Gesture, from: Step | null = current) => {
     if (!from) return Promise.resolve(null)
@@ -184,7 +191,6 @@ export function Investigate({ meta }: { meta: DatasetMeta }) {
 
   const chain = current ? chainOf(current.id, steps) : []
   const measures = structure.fields.filter((f) => f.role === 'measure')
-  const ctx = current?.res.context
 
   return (
     <div className="inv">
@@ -248,58 +254,32 @@ export function Investigate({ meta }: { meta: DatasetMeta }) {
         </aside>
 
         <section className="inv-main">
+          {chain.map((step, i) => {
+            const next = chain[i + 1]
+            return (
+              <div key={`${step.id}:${step.leadId}`}>
+                {i > 0 && <Connector from={chain[i - 1]} to={step} />}
+                <StoryCard
+                  step={step}
+                  index={i + 1}
+                  isCurrent={!next}
+                  picked={next ? addedFilter(step, next) : null}
+                  pending={pending?.stepId === step.id ? pending.g : null}
+                  onGesture={(g, immediate) => (immediate ? follow(g, step) : setPending({ stepId: step.id, g }))}
+                  onFollowPending={() => pending && follow(pending.g, step)}
+                  onClearPending={() => setPending(null)}
+                  onFocus={() => setCurrentId(step.id)}
+                />
+              </div>
+            )
+          })}
+          {loading && (
+            <div className="story-thinking">
+              <span className="spinner" /> Choosing the next view…
+            </div>
+          )}
           {error && <div className="error">⚠ {error}</div>}
-          {ctx && (
-            <div className="inv-context">
-              <span>
-                <b>{ctx.n.toLocaleString()}</b> records
-              </span>
-              <span>
-                {ctx.measureLabel}: <b>{fmt(ctx.total)}</b>
-              </span>
-              {ctx.bgN > 0 && (
-                <span className="muted">
-                  compared with {ctx.bgN.toLocaleString()} records {ctx.bgLabel}
-                </span>
-              )}
-              {loading && <span className="spinner" />}
-            </div>
-          )}
-          {ctx?.caution && <div className="banner warn">{ctx.caution}</div>}
-          {lead && current ? (
-            <div className="inv-card" key={`${current.id}:${lead.id}`}>
-              <div className="inv-card-head">
-                <div>
-                  <h2>
-                    <span className="kind">{KIND_ICON[lead.kind]}</span> {lead.title}
-                  </h2>
-                  <p className="reason">{lead.reason}</p>
-                </div>
-                <StrengthBadge lead={lead} />
-              </div>
-              <LeadChart
-                lead={lead}
-                measureLabel={ctx?.measureLabel ?? ''}
-                onGesture={(g, immediate) => (immediate ? follow(g) : setPending(g))}
-              />
-              <div className="inv-foot">
-                {pending ? (
-                  <>
-                    <button className="btn primary" onClick={() => follow(pending)}>
-                      Investigate {pending.filter.label} →
-                    </button>
-                    <button className="btn ghost" onClick={() => setPending(null)}>
-                      Clear
-                    </button>
-                  </>
-                ) : (
-                  <span className="muted">{HINT[lead.kind]}</span>
-                )}
-              </div>
-            </div>
-          ) : (
-            !loading && current && <div className="empty">Nothing stands out here. Try another measure or step back.</div>
-          )}
+          <div ref={storyEnd} />
         </section>
 
         <aside className="inv-leads">
@@ -323,6 +303,98 @@ export function Investigate({ meta }: { meta: DatasetMeta }) {
           ))}
         </aside>
       </div>
+    </div>
+  )
+}
+
+/** The filter a step added on top of its parent: the gesture that was followed. */
+function addedFilter(step: Step, next: Step): Filter | null {
+  const key = (f: Filter) => JSON.stringify([f.field, f.op, f.value])
+  const had = new Set(step.filters.map(key))
+  return next.filters.find((f) => !had.has(key(f))) ?? null
+}
+
+function Connector({ from, to }: { from: Step; to: Step }) {
+  const f = addedFilter(from, to)
+  return (
+    <div className="story-link">
+      <span className="story-arrow">↓</span>
+      <span>
+        {to.via.startsWith('autopilot') ? 'Autopilot followed' : to.via.startsWith('measure') ? 'Switched' : 'You followed'}{' '}
+        <b>{f ? f.label : to.via.replace(/^measure → /, 'measure to ')}</b>
+      </span>
+      <span className="muted">
+        {from.res.context.n.toLocaleString()} → {to.res.context.n.toLocaleString()} records
+      </span>
+    </div>
+  )
+}
+
+interface StoryCardProps {
+  step: Step
+  index: number
+  isCurrent: boolean
+  picked: Filter | null
+  pending: Gesture | null
+  onGesture: (g: Gesture, immediate: boolean) => void
+  onFollowPending: () => void
+  onClearPending: () => void
+  onFocus: () => void
+}
+
+function StoryCard({ step, index, isCurrent, picked, pending, onGesture, onFollowPending, onClearPending, onFocus }: StoryCardProps) {
+  const ctx = step.res.context
+  const lead = step.res.leads.find((l) => l.id === step.leadId) ?? step.res.leads[0] ?? null
+  return (
+    <div className={`inv-card story-card ${isCurrent ? 'current' : 'past'}`}>
+      <div className="inv-card-head">
+        <div>
+          <div className="story-meta">
+            <span className="story-step">Step {index}</span>
+            <span>
+              <b>{ctx.n.toLocaleString()}</b> records · {ctx.measureLabel}: <b>{fmt(ctx.total)}</b>
+            </span>
+            {ctx.bgN > 0 && <span className="muted">vs {ctx.bgN.toLocaleString()} {ctx.bgLabel}</span>}
+            {!isCurrent && (
+              <button className="link" onClick={onFocus} title="Rewind to this step and see its other leads">
+                rewind here
+              </button>
+            )}
+          </div>
+          {lead && (
+            <>
+              <h2>
+                <span className="kind">{KIND_ICON[lead.kind]}</span> {lead.title}
+              </h2>
+              <p className="reason">{lead.reason}</p>
+            </>
+          )}
+        </div>
+        {lead && <StrengthBadge lead={lead} />}
+      </div>
+      {ctx.caution && isCurrent && <div className="banner warn">{ctx.caution}</div>}
+      {lead ? (
+        <LeadChart lead={lead} measureLabel={ctx.measureLabel} picked={picked} compact={!isCurrent} onGesture={onGesture} />
+      ) : (
+        <div className="empty">Nothing stands out here. Try another measure or step back.</div>
+      )}
+      {(isCurrent || pending) && lead && (
+        <div className="inv-foot">
+          {pending ? (
+            <>
+              <button className="btn primary" onClick={onFollowPending}>
+                Investigate {pending.filter.label} →
+              </button>
+              <button className="btn ghost" onClick={onClearPending}>
+                Clear
+              </button>
+            </>
+          ) : (
+            <span className="muted">{HINT[lead.kind]}</span>
+          )}
+        </div>
+      )}
+      {!isCurrent && !pending && <div className="story-fork-hint">Click a different bar or period here to branch off from this step.</div>}
     </div>
   )
 }
@@ -358,13 +430,24 @@ function Trail({ steps, currentId, onPick }: { steps: Step[]; currentId: number 
   return <ul className="trail">{kids(null).map((s) => render(s, 0))}</ul>
 }
 
-function LeadChart({ lead, measureLabel, onGesture }: { lead: Lead; measureLabel: string; onGesture: (g: Gesture, immediate: boolean) => void }) {
+interface LeadChartProps {
+  lead: Lead
+  measureLabel: string
+  picked?: Filter | null
+  compact?: boolean
+  onGesture: (g: Gesture, immediate: boolean) => void
+}
+
+function LeadChart({ lead, measureLabel, picked, compact, onGesture }: LeadChartProps) {
   const outer = useRef<HTMLDivElement>(null)
   const ref = useRef<HTMLDivElement>(null)
   const [width, setWidth] = useState(600)
   const gesture = useRef(onGesture)
+  const pickedRef = useRef(picked)
+  const pickedKey = picked ? JSON.stringify([picked.field, picked.value]) : ''
   useEffect(() => {
     gesture.current = onGesture
+    pickedRef.current = picked
   })
 
   useEffect(() => {
@@ -382,7 +465,7 @@ function LeadChart({ lead, measureLabel, onGesture }: { lead: Lead; measureLabel
     let result: Result | undefined
     let cancelled = false
     const v = lead.view
-    embed(el, buildSpec(lead, measureLabel, width) as never, { actions: { export: true, source: true, compiled: false, editor: true }, renderer: 'svg' })
+    embed(el, buildSpec(lead, measureLabel, width, { picked: pickedRef.current, compact }) as never, { actions: { export: true, source: true, compiled: false, editor: true }, renderer: 'svg' })
       .then((r) => {
         if (cancelled) return r.finalize()
         result = r
@@ -422,7 +505,9 @@ function LeadChart({ lead, measureLabel, onGesture }: { lead: Lead; measureLabel
       cancelled = true
       result?.finalize()
     }
-  }, [lead, measureLabel, width])
+    // pickedKey stands in for picked, which is a fresh object on every render
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [lead, measureLabel, width, pickedKey, compact])
 
   return (
     <div ref={outer} className="inv-chart">

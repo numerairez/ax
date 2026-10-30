@@ -1138,3 +1138,77 @@ td.num {
     grid-template-columns: 1fr;
   }
 }
+
+/* Investigation story: every step stays on the page, newest at the bottom */
+.story-card.past {
+  box-shadow: none;
+  animation: none;
+}
+.story-card.past h2 {
+  font-size: 15px;
+}
+.story-card.past .reason {
+  font-size: 13.5px;
+  margin-bottom: 8px;
+}
+.story-card.current {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent), var(--shadow);
+}
+.story-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  align-items: baseline;
+  font-size: 12.5px;
+  margin-bottom: 6px;
+}
+.story-step {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+}
+.story-meta .link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--muted);
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
+.story-meta .link:hover {
+  color: var(--accent);
+}
+.story-link {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 4px 0 4px 26px;
+  padding: 10px 0 10px 18px;
+  border-left: 2px dashed var(--border);
+  font-size: 13px;
+}
+.story-arrow {
+  color: #e4572e;
+  font-weight: 700;
+  margin-left: -29px;
+  background: var(--bg);
+  padding: 2px 4px;
+}
+.story-fork-hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 8px;
+}
+.story-thinking {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin: 14px 0 0 26px;
+  color: var(--muted);
+  font-size: 13px;
+}

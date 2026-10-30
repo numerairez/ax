@@ -27,10 +27,10 @@ _YEAR = re.compile(r"^year$|_year$", re.I)
 # Measures that are levels/ratios: summing them is meaningless, average instead.
 _MEAN = re.compile(
     r"price|rate|ratio|pct|percent|share|avg|mean|temp|humid|rating|discount|score|expectancy|"
-    r"per_capita|length|width|height|_cm$|wind|return|fertility|^open$|^close$|^high$|^low$|age|days",
+    r"per_capita|length|width|height|_cm$|wind|return|fertility|bps|contributors|^open$|^close$|^high$|^low$|age|days",
     re.I,
 )
-_PRIMARY = re.compile(r"revenue|sales|amount|value|profit|messages|population|count|total", re.I)
+_PRIMARY = re.compile(r"abs_variance|revenue|sales|amount|value|profit|messages|population|count|total", re.I)
 _PRIMARY_MEAN = re.compile(r"close|price|temp_max|life|score", re.I)
 
 

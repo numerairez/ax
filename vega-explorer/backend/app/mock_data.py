@@ -392,6 +392,146 @@ def network() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+# ---------------------------------------------------------------------------
+# IPV variance: month-end independent price verification (desk vs IPV)
+# ---------------------------------------------------------------------------
+
+# product: (fair value level, IPV sources with weights, typical |variance| in bps, tolerance in bps, exposure scale $m)
+PRODUCTS = {
+    "IRS": ("L2", {"Consensus": 0.8, "Vendor feed": 0.2}, 0.6, 2, 400),
+    "Cross-currency Swap": ("L2", {"Consensus": 0.7, "Broker quote": 0.3}, 1.5, 4, 250),
+    "Govt Bond": ("L1", {"Exchange": 0.6, "Vendor feed": 0.4}, 0.4, 1.5, 600),
+    "Swaption": ("L2", {"Consensus": 0.9, "Broker quote": 0.1}, 3, 8, 120),
+    "Cap/Floor": ("L2", {"Consensus": 0.8, "Broker quote": 0.2}, 4, 10, 80),
+    "Bermudan Swaption": ("L3", {"Model proxy": 0.8, "Consensus": 0.2}, 14, 30, 40),
+    "EM Swap": ("L2", {"Broker quote": 0.7, "Consensus": 0.3}, 7, 15, 90),
+    "EM Bond": ("L2", {"Broker quote": 0.6, "Vendor feed": 0.4}, 9, 20, 110),
+    "IG Corporate Bond": ("L2", {"Vendor feed": 0.7, "Broker quote": 0.3}, 5, 12, 300),
+    "CDS Index": ("L2", {"Consensus": 0.9, "Vendor feed": 0.1}, 1, 4, 350),
+    "Single-name CDS": ("L2", {"Consensus": 0.6, "Broker quote": 0.4}, 3, 9, 150),
+    "HY Bond": ("L2", {"Broker quote": 0.7, "Vendor feed": 0.3}, 18, 40, 140),
+    "Distressed Loan": ("L3", {"Broker quote": 0.8, "Model proxy": 0.2}, 55, 100, 45),
+    "CLO Tranche": ("L3", {"Broker quote": 0.6, "Model proxy": 0.4}, 35, 75, 70),
+    "ABS": ("L3", {"Model proxy": 0.6, "Broker quote": 0.4}, 30, 70, 60),
+    "FX Forward": ("L2", {"Vendor feed": 0.9, "Consensus": 0.1}, 0.2, 1, 800),
+    "FX Vanilla Option": ("L2", {"Consensus": 0.9, "Broker quote": 0.1}, 2, 6, 150),
+    "FX Barrier Option": ("L3", {"Model proxy": 0.7, "Consensus": 0.3}, 12, 30, 35),
+    "Power Forward": ("L2", {"Broker quote": 0.8, "Exchange": 0.2}, 22, 45, 220),
+    "Gas Swap": ("L2", {"Broker quote": 0.6, "Exchange": 0.4}, 14, 35, 80),
+    "Metals Forward": ("L1", {"Exchange": 0.9, "Vendor feed": 0.1}, 1, 4, 120),
+    "Index Option": ("L1", {"Exchange": 0.9, "Consensus": 0.1}, 1, 4, 200),
+    "Variance Swap": ("L2", {"Consensus": 0.9, "Broker quote": 0.1}, 8, 20, 60),
+    "Autocallable": ("L3", {"Model proxy": 0.8, "Consensus": 0.2}, 28, 60, 50),
+    "Cliquet": ("L3", {"Model proxy": 0.9, "Consensus": 0.1}, 24, 55, 25),
+    "Equity Swap": ("L2", {"Vendor feed": 0.8, "Exchange": 0.2}, 1, 4, 300),
+}
+
+# (division, business line, desk, region, number of books, products)
+DESKS = [
+    ("FICC", "Rates", "G10 Swaps London", "EMEA", 3, ["IRS", "Cross-currency Swap"]),
+    ("FICC", "Rates", "G10 Swaps New York", "Americas", 3, ["IRS", "Cross-currency Swap"]),
+    ("FICC", "Rates", "Govt Bonds London", "EMEA", 2, ["Govt Bond"]),
+    ("FICC", "Rates", "Govt Bonds New York", "Americas", 2, ["Govt Bond"]),
+    ("FICC", "Rates", "Rates Options London", "EMEA", 2, ["Swaption", "Cap/Floor", "Bermudan Swaption"]),
+    ("FICC", "Rates", "EM Rates Singapore", "APAC", 2, ["EM Swap", "EM Bond"]),
+    ("FICC", "Credit", "IG Credit New York", "Americas", 3, ["IG Corporate Bond", "CDS Index", "Single-name CDS"]),
+    ("FICC", "Credit", "IG Credit London", "EMEA", 2, ["IG Corporate Bond", "CDS Index"]),
+    ("FICC", "Credit", "HY & Distressed New York", "Americas", 2, ["HY Bond", "Distressed Loan"]),
+    ("FICC", "Credit", "Structured Credit New York", "Americas", 2, ["CLO Tranche", "ABS"]),
+    ("FICC", "FX", "FX Forwards London", "EMEA", 2, ["FX Forward"]),
+    ("FICC", "FX", "FX Forwards Hong Kong", "APAC", 2, ["FX Forward"]),
+    ("FICC", "FX", "FX Options London", "EMEA", 2, ["FX Vanilla Option", "FX Barrier Option"]),
+    ("FICC", "Commodities", "Power & Gas London", "EMEA", 2, ["Power Forward", "Gas Swap"]),
+    ("FICC", "Commodities", "Metals Singapore", "APAC", 1, ["Metals Forward"]),
+    ("Equities", "Equity Derivatives", "Flow Vol London", "EMEA", 2, ["Index Option", "Variance Swap"]),
+    ("Equities", "Equity Derivatives", "Exotics New York", "Americas", 2, ["Autocallable", "Cliquet"]),
+    ("Equities", "Equity Derivatives", "Exotics Hong Kong", "APAC", 2, ["Autocallable"]),
+    ("Equities", "Delta One", "Delta One New York", "Americas", 2, ["Equity Swap"]),
+]
+TENORS = ["< 1Y", "1-5Y", "5-10Y", "10Y+"]
+
+
+def ipv_variance() -> pd.DataFrame:
+    """One row per book x product x month-end. Planted stories the investigation should surface:
+
+    - Structured Credit: April 2025 spread shock; broker quotes thin out and variances blow through tolerance.
+    - EM Rates Singapore: the desk marks above IPV and the gap grows every month from mid-2025 (a mark drift).
+    - Power & Gas London: January 2026 cold snap drives a one-off spike, desk marks above the street.
+    - Quarter-end months are tighter everywhere because desks true up their marks before the close.
+    - Fewer quote contributors and staler quotes mean bigger variances; Model proxy / L3 is noisiest.
+    """
+    rng = _rng(77)
+    cobs = pd.date_range("2024-10-01", "2026-09-30", freq="BME")
+    books = []
+    for div, bl, desk, region, nbooks, prods in DESKS:
+        code = "".join(w[0] for w in desk.replace("&", "").split()).upper()
+        for b in range(1, nbooks + 1):
+            # Each book trades a subset of the desk's products at a characteristic size and tenor.
+            held = [p for p in prods if rng.random() < 0.85] or prods[:1]
+            for p in held:
+                level, sources, bps, tol, scale = PRODUCTS[p]
+                src = rng.choice(list(sources), p=_normalized(np.array(list(sources.values()))))
+                books.append((div, bl, desk, region, f"{code}-{b:02d}", p, level, src, bps, tol, scale * rng.lognormal(0, 0.5), rng.choice(TENORS)))
+
+    rows = []
+    for cob in cobs:
+        quarter_end = cob.month in (3, 6, 9, 12)
+        for div, bl, desk, region, book, p, level, src, bps, tol, size, tenor in books:
+            exposure = size * 1e6 * rng.lognormal(0, 0.15)
+            contributors = {"Consensus": 14, "Exchange": 30, "Vendor feed": 6, "Broker quote": 3.5, "Model proxy": 1}[src]
+            contributors = max(1, int(rng.poisson(contributors)))
+            age = float(rng.gamma(1.2, {"Broker quote": 2.5, "Model proxy": 4}.get(src, 0.6)))
+            scale, bias = bps, 0.0
+            if desk.startswith("Structured Credit") and cob.year == 2025 and cob.month in (4, 5):
+                scale *= 4.5 if cob.month == 4 else 2.2
+                bias = 0.5 * bps * (1 if cob.month == 4 else 0.5)
+                contributors = max(1, contributors - 2)
+                age += 6
+            if desk.startswith("EM Rates") and cob >= pd.Timestamp("2025-06-01"):
+                months = (cob.year - 2025) * 12 + cob.month - 6
+                bias = bps * 0.35 * months
+            if desk.startswith("Power") and cob.year == 2026 and cob.month == 1:
+                scale *= 5
+                bias = 2.5 * bps
+            if quarter_end:
+                scale *= 0.65
+            scale *= (3 / max(contributors, 1)) ** 0.35 * (1 + age / 15)
+            var_bps = bias + rng.normal(0, scale) + rng.normal(0, 0.15 * bps)
+            variance = exposure * var_bps / 1e4
+            mv = exposure * rng.choice([-1, 1], p=[0.3, 0.7]) * rng.uniform(0.02, 0.12)
+            tolerance = exposure * tol / 1e4
+            breach = abs(variance) > tolerance
+            # Breaches on L2/L3 get a booked valuation adjustment toward IPV.
+            adj = -variance * rng.uniform(0.6, 1.0) if breach and level != "L1" else 0.0
+            rows.append(
+                {
+                    "cob_date": cob,
+                    "division": div,
+                    "business_line": bl,
+                    "desk": desk,
+                    "book": book,
+                    "region": region,
+                    "product": p,
+                    "fv_level": level,
+                    "ipv_source": src,
+                    "tenor_bucket": tenor,
+                    "ipv_status": "Breach" if breach else "Within tolerance",
+                    "abs_variance_usd": round(abs(variance), 0),
+                    "variance_usd": round(variance, 0),
+                    "desk_mark_usd": round(mv, 0),
+                    "ipv_mark_usd": round(mv - variance, 0),
+                    "exposure_usd": round(exposure, 0),
+                    "tolerance_usd": round(tolerance, 0),
+                    "ipv_adjustment_usd": round(adj, 0),
+                    "breach_count": int(breach),
+                    "variance_bps": round(var_bps, 2),
+                    "quote_contributors": contributors,
+                    "quote_age_days": round(age, 1),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
 def _normalized(w: np.ndarray) -> np.ndarray:
     return w / w.sum()
 
@@ -426,5 +566,11 @@ BUILTIN = {
         "Collaboration Network",
         "Edge list (source → target) of 32 people in 5 teams with message counts — for force graphs and arc diagrams.",
         network,
+    ),
+    "ipv_variance": (
+        "IPV Variance",
+        "Month-end independent price verification: desk marks vs IPV across division → business line → desk → book, "
+        "by product, fair-value level and price source, with tolerances, breaches and adjustments (synthetic).",
+        ipv_variance,
     ),
 }
