@@ -3,18 +3,16 @@ import embed, { type Result } from 'vega-embed'
 import { api } from '../api.ts'
 import type { DatasetMeta } from '../types.ts'
 import { StructureSetup } from './StructureSetup.tsx'
-import { COUNT, type Filter, type Gesture, type Lead, type Step, type Structure } from './types.ts'
-import { autoGesture, buildSpec, fmt, localIso, periodLabel } from './views.ts'
+import { COUNT, type Baseline, type Filter, type Gesture, type Lead, type Step, type Structure } from './types.ts'
+import { autoGesture, buildSpec, fmt, guideOf, iconOf, viewOf, type KeyItem } from './views.ts'
 
 type Pending = { stepId: number; g: Gesture }
 
-const KIND_ICON: Record<Lead['kind'], string> = { breakdown: '▤', trend: '〜', driver: '⇄', change: '±' }
-const HINT: Record<Lead['kind'], string> = {
-  breakdown: 'Click a bar to follow that lead.',
-  trend: 'Click a point to dig into that period, or drag across a stretch of time to ask what changed.',
-  driver: 'Drag across a range to investigate just those records.',
-  change: 'Click a bar to follow the biggest movers.',
-}
+const BASELINES: { value: Baseline; label: string; title: string }[] = [
+  { value: 'siblings', label: 'the rest', title: 'Compare the selection with the records that differ only in the last filter' },
+  { value: 'prior', label: 'previous period', title: 'Compare the latest period (or the period you picked) with the one before it' },
+  { value: 'yoy', label: 'a year earlier', title: 'Compare the latest period (or the period you picked) with the same period a year earlier' },
+]
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 export function Investigate({ meta }: { meta: DatasetMeta }) {
@@ -27,6 +25,7 @@ export function Investigate({ meta }: { meta: DatasetMeta }) {
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState<Pending | null>(null)
   const [pilot, setPilot] = useState(false)
+  const [baseline, setBaseline] = useState<Baseline>('siblings')
   const testsRef = useRef(0)
   const nextId = useRef(1)
   const stepsRef = useRef<Step[]>([])
@@ -74,7 +73,7 @@ export function Investigate({ meta }: { meta: DatasetMeta }) {
   }
 
   const go = useCallback(
-    async (filters: Filter[], measure: string, parent: number | null, via: string): Promise<Step | null> => {
+    async (filters: Filter[], measure: string, parent: number | null, via: string, base: Baseline): Promise<Step | null> => {
       setLoading(true)
       setError(null)
       setPending(null)
@@ -82,13 +81,14 @@ export function Investigate({ meta }: { meta: DatasetMeta }) {
         const seen = chainOf(parent).map((s) => s.leadId)
         const res = await api.investigate(meta.id, {
           measure,
+          baseline: base,
           filters: filters.map(({ field, op, value }) => ({ field, op, value })),
           testsSoFar: testsRef.current,
           seen,
         })
         testsRef.current += res.tests
         setTests(testsRef.current)
-        const step: Step = { id: nextId.current++, parent, filters, measure, res, leadId: res.leads[0]?.id ?? '', via }
+        const step: Step = { id: nextId.current++, parent, filters, measure, baseline: res.context.baseline, res, leadId: res.leads[0]?.id ?? '', via }
         stepsRef.current = [...stepsRef.current, step]
         setSteps(stepsRef.current)
         setCurrentId(step.id)
@@ -105,10 +105,10 @@ export function Investigate({ meta }: { meta: DatasetMeta }) {
     [meta.id],
   )
 
-  const start = useCallback((s: Structure) => go([], s.primaryMeasure, null, 'start'), [go])
+  const start = useCallback((s: Structure, base: Baseline) => go([], s.primaryMeasure, null, 'start', base), [go])
 
   useEffect(() => {
-    if (structure && !editing && stepsRef.current.length === 0) start(structure)
+    if (structure && !editing && stepsRef.current.length === 0) start(structure, 'siblings')
   }, [structure, editing, start])
 
   const current = steps.find((s) => s.id === currentId) ?? null
@@ -121,7 +121,7 @@ export function Investigate({ meta }: { meta: DatasetMeta }) {
   const follow = (g: Gesture, from: Step | null = current) => {
     if (!from) return Promise.resolve(null)
     const filters = [...from.filters.filter((f) => f.field !== g.filter.field), g.filter]
-    return go(filters, from.measure, from.id, g.via)
+    return go(filters, from.measure, from.id, g.via, from.baseline)
   }
 
   const chooseLead = (step: Step, leadId: string) => {
@@ -191,6 +191,7 @@ export function Investigate({ meta }: { meta: DatasetMeta }) {
 
   const chain = current ? chainOf(current.id, steps) : []
   const measures = structure.fields.filter((f) => f.role === 'measure')
+  const shownBaseline = current?.baseline ?? baseline
 
   return (
     <div className="inv">
@@ -216,12 +217,40 @@ export function Investigate({ meta }: { meta: DatasetMeta }) {
             <span>Measure</span>
             <select
               value={current?.measure ?? structure.primaryMeasure}
-              onChange={(e) => current && go(current.filters, e.target.value, current.id, `measure → ${e.target.value === COUNT ? 'records' : e.target.value}`)}
+              onChange={(e) =>
+                current && go(current.filters, e.target.value, current.id, `measure → ${e.target.value === COUNT ? 'records' : e.target.value}`, current.baseline)
+              }
             >
               <option value={COUNT}>Records</option>
               {measures.map((m) => (
                 <option key={m.name} value={m.name}>
                   {m.agg === 'mean' ? 'Avg' : 'Total'} {m.name}
+                </option>
+              ))}
+              {structure.calcs.length > 0 && (
+                <optgroup label="Calculated">
+                  {structure.calcs.map((c) => (
+                    <option key={c.name} value={c.name}>
+                      {c.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+          </label>
+          <label className="field inline">
+            <span>Compare with</span>
+            <select
+              value={shownBaseline}
+              onChange={(e) => {
+                const b = e.target.value as Baseline
+                setBaseline(b)
+                if (current) go(current.filters, current.measure, current.id, `compare → ${BASELINES.find((x) => x.value === b)?.label}`, b)
+              }}
+            >
+              {BASELINES.map((b) => (
+                <option key={b.value} value={b.value} disabled={b.value !== 'siblings' && !structure.timeField} title={b.title}>
+                  {b.label}
                 </option>
               ))}
             </select>
@@ -236,7 +265,7 @@ export function Investigate({ meta }: { meta: DatasetMeta }) {
             className="btn ghost"
             onClick={() => {
               reset()
-              start(structure)
+              start(structure, baseline)
             }}
           >
             Restart
@@ -287,7 +316,7 @@ export function Investigate({ meta }: { meta: DatasetMeta }) {
           {current?.res.leads.map((l) => (
             <button key={l.id} className={`lead ${l.id === current.leadId ? 'active' : ''}`} onClick={() => chooseLead(current, l.id)}>
               <div className="lead-top">
-                <span className="kind">{KIND_ICON[l.kind]}</span>
+                <span className="kind">{iconOf(l)}</span>
                 <span className="lead-title">{l.title}</span>
                 <StrengthBadge lead={l} small />
               </div>
@@ -320,8 +349,8 @@ function Connector({ from, to }: { from: Step; to: Step }) {
     <div className="story-link">
       <span className="story-arrow">↓</span>
       <span>
-        {to.via.startsWith('autopilot') ? 'Autopilot followed' : to.via.startsWith('measure') ? 'Switched' : 'You followed'}{' '}
-        <b>{f ? f.label : to.via.replace(/^measure → /, 'measure to ')}</b>
+        {to.via.startsWith('autopilot') ? 'Autopilot followed' : /^(measure|compare) →/.test(to.via) ? 'Switched' : 'You followed'}{' '}
+        <b>{f ? f.label : to.via.replace(/^measure → /, 'measure to ').replace(/^compare → /, 'comparison to ')}</b>
       </span>
       <span className="muted">
         {from.res.context.n.toLocaleString()} → {to.res.context.n.toLocaleString()} records
@@ -354,6 +383,11 @@ function StoryCard({ step, index, isCurrent, picked, pending, onGesture, onFollo
             <span>
               <b>{ctx.n.toLocaleString()}</b> records · {ctx.measureLabel}: <b>{fmt(ctx.total)}</b>
             </span>
+            {ctx.window && (
+              <span className="window-chip" title={ctx.bgLabel}>
+                {ctx.window} <span className="muted">vs</span> {ctx.compareWindow}
+              </span>
+            )}
             {ctx.bgN > 0 && <span className="muted">vs {ctx.bgN.toLocaleString()} {ctx.bgLabel}</span>}
             {!isCurrent && (
               <button className="link" onClick={onFocus} title="Rewind to this step and see its other leads">
@@ -364,7 +398,7 @@ function StoryCard({ step, index, isCurrent, picked, pending, onGesture, onFollo
           {lead && (
             <>
               <h2>
-                <span className="kind">{KIND_ICON[lead.kind]}</span> {lead.title}
+                <span className="kind">{iconOf(lead)}</span> {lead.title}
               </h2>
               <p className="reason">{lead.reason}</p>
             </>
@@ -374,7 +408,10 @@ function StoryCard({ step, index, isCurrent, picked, pending, onGesture, onFollo
       </div>
       {ctx.caution && isCurrent && <div className="banner warn">{ctx.caution}</div>}
       {lead ? (
-        <LeadChart lead={lead} measureLabel={ctx.measureLabel} picked={picked} compact={!isCurrent} onGesture={onGesture} />
+        <>
+          <LeadChart lead={lead} measureLabel={ctx.measureLabel} picked={picked} compact={!isCurrent} onGesture={onGesture} />
+          <ChartKey lead={lead} measureLabel={ctx.measureLabel} bgLabel={ctx.bgLabel} picked={picked} open={isCurrent} />
+        </>
       ) : (
         <div className="empty">Nothing stands out here. Try another measure or step back.</div>
       )}
@@ -390,12 +427,53 @@ function StoryCard({ step, index, isCurrent, picked, pending, onGesture, onFollo
               </button>
             </>
           ) : (
-            <span className="muted">{HINT[lead.kind]}</span>
+            <span className="muted">{viewOf(lead).hint(lead.view)}</span>
           )}
         </div>
       )}
       {!isCurrent && !pending && <div className="story-fork-hint">Click a different bar or period here to branch off from this step.</div>}
     </div>
+  )
+}
+
+/** "How to read this": what the chart shows and what each mark means. Open on the current step. */
+function ChartKey({ lead, measureLabel, bgLabel, picked, open }: { lead: Lead; measureLabel: string; bgLabel: string; picked: Filter | null; open: boolean }) {
+  const g = guideOf(lead, { measureLabel, bgLabel, picked })
+  if (!g.read && !g.items.length) return null
+  return (
+    <details className="chart-key" open={open || undefined}>
+      <summary>How to read this chart</summary>
+      {g.read && <p>{g.read}</p>}
+      {g.items.length > 0 && (
+        <ul>
+          {g.items.map((it) => (
+            <li key={it.label}>
+              <Swatch item={it} />
+              {it.label}
+            </li>
+          ))}
+        </ul>
+      )}
+    </details>
+  )
+}
+
+/** A small drawing of a mark, styled the way the chart draws it. */
+function Swatch({ item: { mark, color } }: { item: KeyItem }) {
+  const line = (dash?: string) => <line x1="1" y1="6" x2="21" y2="6" stroke={color} strokeWidth={mark === 'line' ? 2.5 : 1.6} strokeDasharray={dash} />
+  return (
+    <svg className="swatch" width="22" height="12" viewBox="0 0 22 12" aria-hidden="true">
+      {mark === 'bar' && <rect x="1" y="2" width="20" height="8" rx="2" fill={color} />}
+      {mark === 'line' && line()}
+      {mark === 'dash' && line('4 3')}
+      {mark === 'dot' && line('1 3')}
+      {mark === 'step' && <polyline points="1,9 8,9 8,3 15,3 15,7 21,7" fill="none" stroke={color} strokeWidth="1.6" strokeDasharray="6 3" />}
+      {mark === 'point' && <circle cx="11" cy="6" r="4" fill={color} />}
+      {mark === 'tick' && <line x1="11" y1="0" x2="11" y2="12" stroke={color} strokeWidth="2" />}
+      {mark === 'band' && <rect x="1" y="0" width="20" height="12" fill={color} opacity="0.2" />}
+      {mark === 'rule' && <line x1="11" y1="0" x2="11" y2="12" stroke={color} strokeWidth="2" strokeDasharray="2 2" />}
+      {mark === 'outline' && <rect x="2" y="2" width="18" height="8" rx="2" fill="none" stroke={color} strokeWidth="2" />}
+    </svg>
   )
 }
 
@@ -420,7 +498,7 @@ function Trail({ steps, currentId, onPick }: { steps: Step[]; currentId: number 
         <button className={`trail-node ${s.id === currentId ? 'active' : ''}`} style={{ paddingLeft: 8 + depth * 12 }} onClick={() => onPick(s.id)}>
           <span className="trail-via">{s.via === 'start' ? 'All data' : s.via}</span>
           <span className="trail-lead">
-            {lead ? KIND_ICON[lead.kind] : ''} {lead?.title ?? '—'}
+            {lead ? iconOf(lead) : ''} {lead?.title ?? '—'}
           </span>
         </button>
         {kids(s.id).length > 0 && <ul>{kids(s.id).map((k) => render(k, depth + 1))}</ul>}
@@ -465,39 +543,37 @@ function LeadChart({ lead, measureLabel, picked, compact, onGesture }: LeadChart
     let result: Result | undefined
     let cancelled = false
     const v = lead.view
-    embed(el, buildSpec(lead, measureLabel, width, { picked: pickedRef.current, compact }) as never, { actions: { export: true, source: true, compiled: false, editor: true }, renderer: 'svg' })
+    const def = viewOf(lead)
+    let spec: Record<string, unknown>
+    try {
+      spec = buildSpec(lead, measureLabel, width, { picked: pickedRef.current, compact })
+    } catch (e) {
+      el.textContent = `Could not draw this view: ${(e as Error).message}`
+      return
+    }
+    embed(el, spec as never, { actions: { export: true, source: true, compiled: false, editor: true }, renderer: 'svg' })
       .then((r) => {
         if (cancelled) return r.finalize()
         result = r
-        r.view.addEventListener('click', (_e, item) => {
-          const d = (item as { datum?: Record<string, unknown> } | null)?.datum
-          if (!d) return
-          if ((v.type === 'breakdown' || v.type === 'change') && d.value != null) {
-            const value = String(d.value)
-            gesture.current({ filter: { field: v.field, op: 'eq', value, label: `${v.field} = ${value}` }, via: `clicked ${value}` }, true)
-          } else if (v.type === 'trend' && d.t != null) {
-            const iso = typeof d.t === 'string' ? d.t : localIso(Number(d.t instanceof Date ? d.t.getTime() : d.t))
-            const label = periodLabel(iso, v.grain)
-            gesture.current({ filter: { field: v.field, op: 'range', value: [iso, iso], label }, via: `clicked ${label}` }, true)
-          }
-        })
-        if (v.type === 'trend' || v.type === 'driver') {
-          r.view.addSignalListener('brush', (_n, sel: Record<string, [number | Date, number | Date]>) => {
-            const ext = sel && Object.values(sel)[0]
-            if (!ext) return
-            const [a, b] = ext.map((x) => (x instanceof Date ? x.getTime() : Number(x)))
-            if (v.type === 'trend') {
-              const lo = localIso(Math.min(a, b))
-              const hi = localIso(Math.max(a, b))
-              const label = `${periodLabel(lo, v.grain)} – ${periodLabel(hi, v.grain)}`
-              gesture.current({ filter: { field: v.field, op: 'range', value: [lo, hi], label }, via: `brushed ${label}` }, false)
-            } else {
-              const lo = Math.min(a, b)
-              const hi = Math.max(a, b)
-              const label = `${v.field} ${fmt(lo)}–${fmt(hi)}`
-              gesture.current({ filter: { field: v.field, op: 'range', value: [lo, hi], label }, via: `brushed ${label}` }, false)
-            }
+        if (def.click) {
+          r.view.addEventListener('click', (_e, item) => {
+            const d = (item as { datum?: Record<string, unknown> } | null)?.datum
+            const g = d && def.click!(v, d)
+            if (g) gesture.current(g, true)
           })
+        }
+        if (def.brush) {
+          try {
+            r.view.addSignalListener('brush', (_n, sel: Record<string, [number | Date, number | Date]>) => {
+              const ext = sel && Object.values(sel)[0]
+              if (!ext) return
+              const [a, b] = ext.map((x) => (x instanceof Date ? x.getTime() : Number(x)))
+              const g = def.brush!(v, [a, b])
+              if (g) gesture.current(g, false)
+            })
+          } catch {
+            /* this view has no brush signal */
+          }
         }
       })
       .catch((e) => console.error(e))

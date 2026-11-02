@@ -4,17 +4,23 @@ The structure tells the lead engine how to reason about each field:
   role       dimension | measure | time | lat | lon | id | ignore
   agg        sum | mean          (measures only: is it additive or an average?)
   parent     another dimension   (hierarchy: city -> state -> region)
+  target     another measure     (measures only: the plan, budget or limit it is judged against)
+
+and lists calculated measures:
+  calcs      [{name, num, den, scale}]   ratio of sums, e.g. breach rate = sum(breaches) / records.
+             A ratio is aggregated as sum(num) / sum(den), never as an average of per-row ratios.
 """
 
 from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
-
+from . import db
+from .db import ident
 from .store import Dataset
 
 STRUCT_DIR = Path(__file__).resolve().parent.parent / "structures"
@@ -32,11 +38,13 @@ _MEAN = re.compile(
 )
 _PRIMARY = re.compile(r"abs_variance|revenue|sales|amount|value|profit|messages|population|count|total", re.I)
 _PRIMARY_MEAN = re.compile(r"close|price|temp_max|life|score", re.I)
+_TARGET = re.compile(r"target|budget|plan|quota|goal|forecast|tolerance|limit|threshold", re.I)
+_FLAG = re.compile(r"(^|_)(count|flag|is|has)(_|$)|^n_|_n$", re.I)
+_UNIT = re.compile(r"(^|_)(usd|eur|gbp|amt|amount|value|total)(?=_|$)", re.I)
 
 
 def detect(ds: Dataset) -> dict[str, Any]:
-    df = ds.df
-    n = len(df)
+    n = ds.rows
     fields: list[dict[str, Any]] = []
     time_field = None
     for f in ds.fields:
@@ -51,7 +59,7 @@ def detect(ds: Dataset) -> dict[str, Any]:
                 role = "lon"
             elif _YEAR.search(name) and f.get("integer"):
                 role = "time"
-            elif _ID.search(name) or _looks_like_sequence(df[name], n):
+            elif _ID.search(name) or _looks_like_sequence(ds, f, n):
                 role = "id"
             else:
                 role, agg = "measure", "mean" if _MEAN.search(name) else "sum"
@@ -65,13 +73,14 @@ def detect(ds: Dataset) -> dict[str, Any]:
                 time_field = name
             else:
                 role = "ignore"
-        fields.append({"name": name, "role": role, "agg": agg, "parent": None})
+        fields.append({"name": name, "role": role, "agg": agg, "parent": None, "target": None})
 
     dims = [f["name"] for f in fields if f["role"] == "dimension"]
-    for alias in _aliases(df, dims):
+    uniq = {f["name"]: f["unique"] for f in ds.fields}
+    for alias in _aliases(ds, dims, uniq):
         next(f for f in fields if f["name"] == alias)["role"] = "ignore"
         dims.remove(alias)
-    parents = _hierarchy(df, dims)
+    parents = _hierarchy(ds, dims, uniq)
     for f in fields:
         f["parent"] = parents.get(f["name"])
 
@@ -83,58 +92,97 @@ def detect(ds: Dataset) -> dict[str, Any]:
         or next((m for m in means if _PRIMARY_MEAN.search(m)), None)
         or (sums[0] if sums else means[0] if means else COUNT)
     )
+    targets(fields, primary)
     return {
         "fields": fields,
         "timeField": time_field,
-        "timeGrain": _grain(df, time_field) if time_field else None,
+        "timeGrain": _grain(ds, time_field) if time_field else None,
         "primaryMeasure": primary,
+        "calcs": suggest_calcs(ds, fields),
         "confirmed": False,
     }
 
 
-def _looks_like_sequence(s: pd.Series, n: int) -> bool:
+def targets(fields: list[dict], primary: str) -> None:
+    """Pair measures with their plan/limit: revenue <- revenue_target, else the primary <- tolerance."""
+    measures = [f for f in fields if f["role"] == "measure"]
+    base = lambda name: _UNIT.sub("", _TARGET.sub("", name)).strip("_").lower()  # noqa: E731
+    for t in measures:
+        if not _TARGET.search(t["name"]):
+            continue
+        match = next((m for m in measures if m is not t and not _TARGET.search(m["name"]) and base(m["name"]) == base(t["name"]) and base(t["name"])), None)
+        match = match or next((m for m in measures if m["name"] == primary and m is not t), None)
+        if match and not match.get("target"):
+            match["target"] = t["name"]
+
+
+def suggest_calcs(ds: Dataset, fields: list[dict]) -> list[dict]:
+    """Ratios worth having from the start: 0/1 flags become rates, and a measure over its limit."""
+    prof = {f["name"]: f for f in ds.fields}
+    out = []
+    for f in fields:
+        if f["role"] != "measure" or f["agg"] != "sum":
+            continue
+        p = prof[f["name"]]
+        st = p.get("stats") or {}
+        if p.get("integer") and st.get("min") == 0 and st.get("max") == 1 and _FLAG.search(f["name"]):
+            stem = re.sub(r"(^|_)(count|flag)$|^(is|has)_", "", f["name"]) or f["name"]
+            out.append({"name": f"{stem} rate", "num": f["name"], "den": COUNT, "scale": 1})
+        if f.get("target"):
+            out.append({"name": f"{f['name']} / {f['target']}", "num": f["name"], "den": f["target"], "scale": 1})
+    return out
+
+
+def _looks_like_sequence(ds: Dataset, f: dict, n: int) -> bool:
     """Integer row identifiers: nearly all distinct and densely packed (1, 2, 3...)."""
-    v = s.dropna()
-    if n <= 50 or not pd.api.types.is_integer_dtype(v) or v.nunique() < 0.95 * n:
+    is_int = ds.types.get(f["name"], "").split("(")[0] in ("TINYINT", "SMALLINT", "INTEGER", "BIGINT", "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "HUGEINT")
+    if n <= 50 or not is_int or f["unique"] < 0.95 * n:
         return False
-    return (v.max() - v.min() + 1) <= 1.5 * v.nunique()
+    return (f["stats"]["max"] - f["stats"]["min"] + 1) <= 1.5 * f["unique"]
 
 
-def _aliases(df: pd.DataFrame, dims: list[str]) -> list[str]:
+def _fd_violations(ds: Dataset, key: str, others: list[str], nulls_count: bool) -> dict[str, int]:
+    """For each other column, the most distinct values it takes within one value of `key`."""
+    if not others:
+        return {}
+    cols = []
+    for i, o in enumerate(others):
+        q = ident(o)
+        extra = f" + max(({q} IS NULL)::INT)" if nulls_count else ""
+        cols.append(f"count(DISTINCT {q}){extra} AS c{i}")
+    inner = f"SELECT {', '.join(cols)} FROM {ds.sql} WHERE {ident(key)} IS NOT NULL GROUP BY {ident(key)}"
+    row = db.one(f"SELECT {', '.join(f'max(c{i})' for i in range(len(others)))} FROM ({inner})")
+    return {o: int(v or 0) for o, v in zip(others, row)}
+
+
+def _aliases(ds: Dataset, dims: list[str], uniq: dict[str, int]) -> list[str]:
     """Dimensions that are a 1:1 relabeling of an earlier one (country / iso3)."""
     out = []
     for i, a in enumerate(dims):
-        for b in dims[i + 1 :]:
-            if b in out or df[a].nunique() != df[b].nunique():
-                continue
-            if (df.groupby(a, observed=True)[b].nunique() <= 1).all():
+        same = [b for b in dims[i + 1 :] if b not in out and uniq[a] == uniq[b]]
+        for b, worst in _fd_violations(ds, a, same, nulls_count=False).items():
+            if worst <= 1:
                 out.append(b)
     return out
 
 
-def _hierarchy(df: pd.DataFrame, dims: list[str]) -> dict[str, str]:
+def _hierarchy(ds: Dataset, dims: list[str], uniq: dict[str, int]) -> dict[str, str]:
     """child -> most specific parent, via functional dependencies child => parent."""
-    uniq = {d: df[d].nunique() for d in dims}
     parents: dict[str, str] = {}
     for child in dims:
-        best = None
-        for cand in dims:
-            if cand == child or uniq[cand] >= uniq[child] or uniq[cand] < 2:
-                continue
-            # Every child value maps to exactly one candidate value.
-            if (df.groupby(child, observed=True)[cand].nunique(dropna=False) <= 1).all():
-                if best is None or uniq[cand] > uniq[best]:
-                    best = cand
-        if best:
-            parents[child] = best
+        cands = [c for c in dims if c != child and 2 <= uniq[c] < uniq[child]]
+        # Every child value maps to exactly one candidate value.
+        ok = [c for c, worst in _fd_violations(ds, child, cands, nulls_count=True).items() if worst <= 1]
+        if ok:
+            parents[child] = max(ok, key=lambda c: (uniq[c], -cands.index(c)))
     return parents
 
 
-def _grain(df: pd.DataFrame, field: str) -> str:
-    s = df[field]
-    if not pd.api.types.is_datetime64_any_dtype(s):
+def _grain(ds: Dataset, field: str) -> str:
+    prof = next(f for f in ds.fields if f["name"] == field)
+    if prof["type"] != "temporal" or not prof["stats"]["min"]:
         return "year"
-    days = (s.max() - s.min()).days
+    days = (datetime.fromisoformat(prof["stats"]["max"]) - datetime.fromisoformat(prof["stats"]["min"])).days
     if days > 365 * 8:
         return "year"
     if days > 120:
@@ -150,6 +198,13 @@ def load(ds: Dataset) -> dict[str, Any]:
         saved = json.loads(path.read_text())
         names = {f["name"] for f in ds.fields}
         if {f["name"] for f in saved.get("fields", [])} == names:
+            if "calcs" not in saved:
+                # Saved before targets and calculated measures existed: the user never saw
+                # these choices, so offer the suggestions on top of their confirmed fields.
+                for f in saved["fields"]:
+                    f.setdefault("target", None)
+                targets(saved["fields"], saved.get("primaryMeasure") or COUNT)
+                saved["calcs"] = suggest_calcs(ds, saved["fields"])
             return saved
     return detect(ds)
 
@@ -167,14 +222,33 @@ def save(ds: Dataset, structure: dict[str, Any]) -> dict[str, Any]:
             f["agg"] = "sum"
         if f["role"] != "measure":
             f["agg"] = None
+    measures = {f["name"] for f in fields if f["role"] == "measure"}
+    for f in fields:
+        if f.get("target") not in measures or f["role"] != "measure" or f.get("target") == f["name"]:
+            f["target"] = None
+    calcs = []
+    for c in structure.get("calcs") or []:
+        name = str(c.get("name") or "").strip()
+        if not name:
+            continue
+        if name in names or name == COUNT or any(x["name"] == name for x in calcs):
+            raise ValueError(f"Calculated measure “{name}” clashes with a field or another measure.")
+        if c.get("num") not in measures | {COUNT} or c.get("den") not in measures | {COUNT}:
+            raise ValueError(f"“{name}” must divide one measure (or Records) by another.")
+        try:
+            scale = float(c.get("scale") or 1)
+        except (TypeError, ValueError):
+            raise ValueError(f"“{name}”: scale must be a number.") from None
+        calcs.append({"name": name, "num": c["num"], "den": c["den"], "scale": scale})
     if _has_cycle({f["name"]: f.get("parent") for f in fields}):
         raise ValueError("The hierarchy contains a cycle.")
     times = [f["name"] for f in fields if f["role"] == "time"]
     out = {
         "fields": fields,
         "timeField": times[0] if times else None,
-        "timeGrain": structure.get("timeGrain") or (_grain(ds.df, times[0]) if times else None),
-        "primaryMeasure": structure.get("primaryMeasure") or COUNT,
+        "timeGrain": structure.get("timeGrain") or (_grain(ds, times[0]) if times else None),
+        "primaryMeasure": primary if (primary := structure.get("primaryMeasure")) in measures | {COUNT} | {c["name"] for c in calcs} else COUNT,
+        "calcs": calcs,
         "confirmed": True,
     }
     STRUCT_DIR.mkdir(exist_ok=True)

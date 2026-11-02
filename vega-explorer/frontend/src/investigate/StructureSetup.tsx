@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { TYPE_ICON } from '../components/Controls.tsx'
 import type { DatasetMeta } from '../types.ts'
-import { COUNT, type Role, type StructField, type Structure } from './types.ts'
+import { COUNT, type Calc, type Role, type StructField, type Structure } from './types.ts'
 
 const ROLES: { value: Role; label: string; hint: string }[] = [
   { value: 'dimension', label: 'Dimension', hint: 'categories you can split and click into' },
@@ -37,16 +37,41 @@ export function StructureSetup({ meta, initial, onConfirm, onReset, onCancel }: 
         if (next.role !== 'measure') next.agg = null
         else if (!next.agg) next.agg = 'sum'
         if (next.role !== 'dimension') next.parent = null
+        if (next.role !== 'measure') next.target = null
         return next
       })
       // A field that stopped being a dimension can't be anyone's parent.
       const dimSet = new Set(fields.filter((f) => f.role === 'dimension').map((f) => f.name))
       for (const f of fields) if (f.parent && !dimSet.has(f.parent)) f.parent = null
+      // Likewise for targets and calculated measures built on a field that stopped being a measure.
+      const measureSet = new Set(fields.filter((f) => f.role === 'measure').map((f) => f.name))
+      for (const f of fields) if (f.target && !measureSet.has(f.target)) f.target = null
+      const usable = (n: string) => n === COUNT || measureSet.has(n)
+      const calcs = prev.calcs.filter((c) => usable(c.num) && usable(c.den))
       // Only one time field.
       if (patch.role === 'time') for (const f of fields) if (f.name !== name && f.role === 'time') f.role = 'ignore'
       const timeField = fields.find((f) => f.role === 'time')?.name ?? null
-      const primary = fields.some((f) => f.name === prev.primaryMeasure && f.role === 'measure') ? prev.primaryMeasure : COUNT
-      return { ...prev, fields, timeField, primaryMeasure: primary }
+      const primary =
+        fields.some((f) => f.name === prev.primaryMeasure && f.role === 'measure') || calcs.some((c) => c.name === prev.primaryMeasure) ? prev.primaryMeasure : COUNT
+      return { ...prev, fields, timeField, primaryMeasure: primary, calcs }
+    })
+
+  const setCalc = (i: number, patch: Partial<Calc>) =>
+    setS((prev) => {
+      const calcs = prev.calcs.map((c, j) => (j === i ? { ...c, ...patch } : c))
+      const renamed = patch.name !== undefined && prev.primaryMeasure === prev.calcs[i].name
+      return { ...prev, calcs, primaryMeasure: renamed ? (patch.name ?? COUNT) : prev.primaryMeasure }
+    })
+  const removeCalc = (i: number) =>
+    setS((prev) => ({
+      ...prev,
+      calcs: prev.calcs.filter((_, j) => j !== i),
+      primaryMeasure: prev.primaryMeasure === prev.calcs[i].name ? COUNT : prev.primaryMeasure,
+    }))
+  const addCalc = () =>
+    setS((prev) => {
+      const num = measures[0]?.name ?? COUNT
+      return { ...prev, calcs: [...prev.calcs, { name: `${num} per record`, num, den: COUNT, scale: 1 }] }
     })
 
   const chains = hierarchyChains(s.fields)
@@ -68,7 +93,8 @@ export function StructureSetup({ meta, initial, onConfirm, onReset, onCancel }: 
       <h1>How is “{meta.name}” structured?</h1>
       <p className="muted">
         The investigation engine uses this to choose the next chart: hierarchies decide where a click drills down, measure aggregation decides
-        whether values are summed or averaged, and the time field powers trend and “what changed” leads. Everything below was detected
+        whether values are summed or averaged, targets power “vs target” leads, and the time field powers trend, “what changed” and
+        prior-period comparisons. Everything below was detected
         automatically, so correct anything that looks wrong.
       </p>
 
@@ -99,6 +125,13 @@ export function StructureSetup({ meta, initial, onConfirm, onReset, onCancel }: 
                 {m.agg === 'mean' ? 'Avg' : 'Total'} {m.name}
               </option>
             ))}
+            {s.calcs
+              .filter((c) => c.name.trim())
+              .map((c) => (
+                <option key={`calc:${c.name}`} value={c.name}>
+                  {c.name}
+                </option>
+              ))}
           </select>
         </label>
         <label className="control">
@@ -119,6 +152,7 @@ export function StructureSetup({ meta, initial, onConfirm, onReset, onCancel }: 
               <th>Role</th>
               <th>Aggregate as</th>
               <th>Parent (rolls up into)</th>
+              <th>Judged against</th>
               <th>Sample</th>
             </tr>
           </thead>
@@ -163,12 +197,58 @@ export function StructureSetup({ meta, initial, onConfirm, onReset, onCancel }: 
                       <span className="muted">—</span>
                     )}
                   </td>
+                  <td>
+                    {f.role === 'measure' ? (
+                      <select value={f.target ?? ''} onChange={(e) => update(f.name, { target: e.target.value || null })} title="A plan, budget or limit for this measure">
+                        <option value="">— no target —</option>
+                        {measures
+                          .filter((m) => m.name !== f.name)
+                          .map((m) => (
+                            <option key={m.name}>{m.name}</option>
+                          ))}
+                      </select>
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
+                  </td>
                   <td className="muted sample">{sample(fm)}</td>
                 </tr>
               )
             })}
           </tbody>
         </table>
+      </div>
+
+      <h2 className="setup-h">Calculated measures</h2>
+      <p className="muted">
+        Rates and ratios are summed on each side and then divided (total breaches ÷ records, total cost ÷ total revenue). Averaging per-row ratios
+        would overweight small rows.
+      </p>
+      <div className="calcs">
+        {s.calcs.map((c, i) => (
+          <div key={i} className="calc-row">
+            <input value={c.name} onChange={(e) => setCalc(i, { name: e.target.value })} placeholder="Name" aria-label="Measure name" />
+            <span className="muted">=</span>
+            <MeasurePick value={c.num} measures={measures} onChange={(num) => setCalc(i, { num })} />
+            <span className="muted">÷</span>
+            <MeasurePick value={c.den} measures={measures} onChange={(den) => setCalc(i, { den })} />
+            <span className="muted">×</span>
+            <input
+              className="scale"
+              type="number"
+              value={c.scale}
+              onChange={(e) => setCalc(i, { scale: Number(e.target.value) || 1 })}
+              title="Scale, e.g. 100 for a percentage or 10000 for basis points"
+              aria-label="Scale"
+            />
+            <button className="btn ghost small" onClick={() => removeCalc(i)} aria-label={`Remove ${c.name}`}>
+              ✕
+            </button>
+          </div>
+        ))}
+        <button className="btn small" onClick={addCalc}>
+          + Add ratio
+        </button>
       </div>
 
       {error && <div className="error">⚠ {error}</div>}
@@ -186,6 +266,17 @@ export function StructureSetup({ meta, initial, onConfirm, onReset, onCancel }: 
         )}
       </div>
     </div>
+  )
+}
+
+function MeasurePick({ value, measures, onChange }: { value: string; measures: StructField[]; onChange: (v: string) => void }) {
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)}>
+      <option value={COUNT}>Records</option>
+      {measures.map((m) => (
+        <option key={m.name}>{m.name}</option>
+      ))}
+    </select>
   )
 }
 

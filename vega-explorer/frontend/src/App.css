@@ -858,6 +858,30 @@ td.num {
 .setup-table tr.role-id td {
   opacity: 0.6;
 }
+.setup-h {
+  font-size: 16px;
+  margin: 26px 0 4px;
+}
+.calcs {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+}
+.calc-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.calc-row input {
+  min-width: 220px;
+}
+.calc-row input.scale {
+  min-width: 0;
+  width: 80px;
+}
 .setup-actions {
   display: flex;
   gap: 10px;
@@ -1170,6 +1194,13 @@ td.num {
   letter-spacing: 0.06em;
   color: var(--accent);
 }
+.window-chip {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: 999px;
+  padding: 1px 9px;
+  font-weight: 600;
+}
 .story-meta .link {
   background: none;
   border: 0;
@@ -1211,4 +1242,41 @@ td.num {
   margin: 14px 0 0 26px;
   color: var(--muted);
   font-size: 13px;
+}
+
+/* ---------- chart keys ("how to read this") ---------- */
+.chart-key {
+  margin: 4px 0 2px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.chart-key summary {
+  cursor: pointer;
+  font-weight: 600;
+  width: fit-content;
+}
+.chart-key summary:hover {
+  color: var(--accent);
+}
+.chart-key p {
+  margin: 6px 0;
+  max-width: 760px;
+  line-height: 1.45;
+  color: var(--text);
+}
+.chart-key ul {
+  list-style: none;
+  padding: 0;
+  margin: 4px 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+}
+.chart-key li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.chart-key .swatch {
+  flex: none;
 }

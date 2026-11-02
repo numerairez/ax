@@ -15,7 +15,7 @@ export function DataPanel({ dataset }: { dataset: Dataset }) {
     <div className="data-panel">
       <p className="muted">
         {meta.rows.toLocaleString()} rows × {meta.fields.length} fields
-        {meta.truncatedFrom ? ` (sampled from ${meta.truncatedFrom.toLocaleString()})` : ''} — {meta.description}
+        {meta.sampled ? ` (charts and this table use a ${meta.sampled.toLocaleString()}-row sample; Investigate uses every row)` : ''} — {meta.description}
       </p>
       <div className="profiles">
         {meta.fields.map((f) => (

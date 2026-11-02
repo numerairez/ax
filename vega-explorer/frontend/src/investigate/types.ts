@@ -1,3 +1,5 @@
+import type { FieldMeta } from '../types.ts'
+
 export type Role = 'dimension' | 'measure' | 'time' | 'lat' | 'lon' | 'id' | 'ignore'
 
 export interface StructField {
@@ -5,6 +7,16 @@ export interface StructField {
   role: Role
   agg: 'sum' | 'mean' | null
   parent: string | null
+  /** Measures only: the plan, budget or limit this measure is judged against. */
+  target: string | null
+}
+
+/** A ratio measure, aggregated as sum(num) / sum(den) × scale. */
+export interface Calc {
+  name: string
+  num: string
+  den: string
+  scale: number
 }
 
 export interface Structure {
@@ -12,8 +24,12 @@ export interface Structure {
   timeField: string | null
   timeGrain: string | null
   primaryMeasure: string
+  calcs: Calc[]
   confirmed: boolean
 }
+
+/** What the selection is compared with. */
+export type Baseline = 'siblings' | 'prior' | 'yoy'
 
 export const COUNT = '__count__'
 
@@ -26,11 +42,12 @@ export interface Filter {
 
 export type Strength = 'strong' | 'suggestive' | 'weak' | 'descriptive'
 
+/** Drawn by the view registry in views.ts, keyed by `type`. */
 export interface LeadView {
-  type: 'breakdown' | 'trend' | 'driver' | 'change'
+  type: string
   field: string
   rows: Record<string, unknown>[]
-  mode?: 'overview' | 'share' | 'mean' | 'like'
+  mode?: 'overview' | 'share' | 'mean' | 'like' | 'target'
   xTitle?: string
   expectedTitle?: string
   highlight?: string
@@ -38,11 +55,26 @@ export interface LeadView {
   restLabel?: string
   means?: { selection: number; rest: number }
   span?: string
+  brushable?: boolean
+  /** "How to read this" text, for views the frontend can't explain on its own (templates). */
+  guide?: string
+  targetLabel?: string
+  /** Prior-period baselines: the window being looked at and the one it is compared with. */
+  window?: [string, string]
+  compareWindow?: [string, string]
+  /** type "template": draw with a chart-library template. */
+  template?: string
+  key?: string
+  f?: Record<string, string>
+  m?: Record<string, string[]>
+  o?: Record<string, string>
+  fields?: FieldMeta[]
 }
 
 export interface Lead {
   id: string
-  kind: LeadView['type']
+  kind: string
+  icon?: string
   field: string
   title: string
   reason: string
@@ -61,6 +93,9 @@ export interface InvestigateResponse {
     measure: string
     measureLabel: string
     agg: 'sum' | 'mean'
+    baseline: Baseline
+    window: string | null
+    compareWindow: string | null
     bgLabel: string
     bgN: number
     caution: string | null
@@ -74,6 +109,7 @@ export interface Step {
   parent: number | null
   filters: Filter[]
   measure: string
+  baseline: Baseline
   res: InvestigateResponse
   leadId: string
   /** How we got here, in words ("clicked West", "autopilot"). */

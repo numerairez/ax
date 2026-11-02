@@ -119,9 +119,41 @@ export default function App() {
     }
   }
 
+  const onConnect = async () => {
+    const path = prompt('Path or glob of files on this machine to read in place (CSV, TSV, JSON, JSON Lines or Parquet), e.g. /data/marks/*.parquet')
+    if (!path?.trim()) return
+    setBusy(true)
+    try {
+      const meta = await api.connect(path.trim())
+      await refreshList()
+      setDatasetId(meta.id)
+      setLoadError(null)
+    } catch (e) {
+      setLoadError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const onRefresh = async () => {
+    if (!dataset) return
+    setBusy(true)
+    try {
+      await api.refresh(dataset.meta.id)
+      cache.current.delete(dataset.meta.id)
+      setDataset(null)
+      await refreshList()
+    } catch (e) {
+      setLoadError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const onDelete = async () => {
-    if (!dataset || dataset.meta.source !== 'upload') return
-    if (!confirm(`Delete uploaded dataset “${dataset.meta.name}”?`)) return
+    if (!dataset || dataset.meta.source === 'builtin') return
+    const what = dataset.meta.source === 'connected' ? 'Disconnect' : 'Delete uploaded dataset'
+    if (!confirm(`${what} “${dataset.meta.name}”?`)) return
     await api.remove(dataset.meta.id)
     cache.current.delete(dataset.meta.id)
     const list = await refreshList()
@@ -161,23 +193,34 @@ export default function App() {
                     </option>
                   ))}
               </optgroup>
-              {metas.some((m) => m.source === 'upload') && (
-                <optgroup label="Uploaded">
-                  {metas
-                    .filter((m) => m.source === 'upload')
-                    .map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name} ({m.rows.toLocaleString()})
-                      </option>
-                    ))}
-                </optgroup>
+              {(['upload', 'connected'] as const).map(
+                (src) =>
+                  metas.some((m) => m.source === src) && (
+                    <optgroup key={src} label={src === 'upload' ? 'Uploaded' : 'Connected files'}>
+                      {metas
+                        .filter((m) => m.source === src)
+                        .map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.name} ({m.rows.toLocaleString()})
+                          </option>
+                        ))}
+                    </optgroup>
+                  ),
               )}
             </select>
           </label>
           <UploadButton onFile={onUpload} />
-          {dataset?.meta.source === 'upload' && (
-            <button className="btn ghost" onClick={onDelete} title="Delete this uploaded dataset">
-              Delete
+          <button className="btn ghost" onClick={onConnect} title="Read files on this machine in place, without uploading a copy">
+            ⛓ Connect
+          </button>
+          {dataset?.meta.source === 'connected' && (
+            <button className="btn ghost" onClick={onRefresh} title={`Re-read ${dataset.meta.location}`}>
+              ↻ Refresh
+            </button>
+          )}
+          {dataset && dataset.meta.source !== 'builtin' && (
+            <button className="btn ghost" onClick={onDelete} title={dataset.meta.source === 'connected' ? 'Forget this connection (the files stay)' : 'Delete this uploaded dataset'}>
+              {dataset.meta.source === 'connected' ? 'Disconnect' : 'Delete'}
             </button>
           )}
           {busy && <span className="spinner" aria-label="Loading" />}
@@ -299,14 +342,14 @@ function UploadButton({ onFile }: { onFile: (f: File) => void }) {
           const f = e.dataTransfer.files[0]
           if (f) onFile(f)
         }}
-        title="CSV, TSV, JSON or JSON Lines — click or drop a file here"
+        title="CSV, TSV, JSON, JSON Lines or Parquet — click or drop a file here"
       >
         ⤒ Upload data
       </button>
       <input
         ref={input}
         type="file"
-        accept=".csv,.tsv,.txt,.json,.jsonl,.ndjson"
+        accept=".csv,.tsv,.txt,.json,.jsonl,.ndjson,.parquet"
         hidden
         onChange={(e) => {
           const f = e.target.files?.[0]
