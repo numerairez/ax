@@ -10,14 +10,27 @@ Narra has three parts:
 - **Chart library:** 65 Vega and Vega-Lite chart techniques, each auto-mapped to whichever dataset you pick. You can remap fields, change options, try themes and palettes, and edit the raw spec live.
 - **How it works:** the method, inside the app, with the engine's live ranking constants.
 
-```
-./start.sh          # backend on :8000, frontend on :5173 (opens the browser)
-```
+## Running it
 
-To run them separately:
+Once, and again whenever the frontend changes:
 
 ```
-cd backend  && .venv/bin/uvicorn app.main:app --port 8000
+pip install -r backend/requirements.txt            # Python 3.11+, ideally in a virtualenv
+cd frontend && npm install && npm run build && cd ..
+```
+
+Then, from this folder:
+
+```
+python backend/app/main.py          # Windows: python backend\app\main.py
+```
+
+That serves the API and the built frontend together at http://localhost:8000 and opens a browser tab. Options: `--port 8080`, `--host 0.0.0.0` (to reach it from other machines, on a trusted network only: anyone who can reach it can use Connect to read files on this machine), `--no-browser`.
+
+**Developing the frontend** with hot reload: `./start.sh` runs the API on :8000 and Vite on :5173 (Vite proxies `/api` to the API). Or run them separately:
+
+```
+cd backend  && .venv/bin/uvicorn app.main:app --port 8000 --reload
 cd frontend && npm run dev
 ```
 

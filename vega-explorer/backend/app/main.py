@@ -1,7 +1,47 @@
+"""Narra's API, and the built frontend when frontend/dist exists.
+
+Run the whole app with:
+
+    python backend/app/main.py [--port 8000] [--host 127.0.0.1] [--no-browser]
+
+(after `npm run build` in frontend/). For frontend development, run Vite's dev server
+instead; it proxies /api to this server.
+"""
+
 from __future__ import annotations
+
+if __name__ == "__main__":
+    # Run as a script, this file isn't part of the `app` package and its relative imports
+    # would fail, so put backend/ on the path and let uvicorn import it as app.main.
+    import argparse
+    import sys
+    import threading
+    import webbrowser
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    parser = argparse.ArgumentParser(prog="narra", description="Run Narra: the API and the built frontend on one port.")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--no-browser", action="store_true", help="don't open a browser tab")
+    args = parser.parse_args()
+    try:
+        import uvicorn
+    except ImportError:
+        sys.exit("Narra needs its Python packages first:  pip install -r backend/requirements.txt")
+    url = f"http://{'localhost' if args.host in ('127.0.0.1', '0.0.0.0') else args.host}:{args.port}"
+    print(f"Narra is starting at {url}  (Ctrl+C to stop)", flush=True)
+    if not args.no_browser:
+        threading.Timer(2.5, webbrowser.open, [url]).start()
+    uvicorn.run("app.main:app", host=args.host, port=args.port)
+    sys.exit(0)
+
+from pathlib import Path
 
 from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from . import structure
 from .engine import core, investigate, registry
@@ -119,3 +159,18 @@ def post_investigate(dataset_id: str, body: dict = Body(...)) -> dict:
         return investigate(ds, structure.load(ds), body)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+
+
+# The built frontend (`npm run build` in frontend/), served from the same port as the API.
+# Mounted last so every /api route above takes precedence.
+DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+if (DIST / "index.html").exists():
+    app.mount("/", StaticFiles(directory=DIST, html=True), name="frontend")
+else:
+
+    @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+    def frontend_missing() -> str:
+        return (
+            "<h1>Narra</h1><p>The API is running, but the frontend hasn't been built yet. Run "
+            "<code>npm install</code> and <code>npm run build</code> in <code>frontend/</code>, then reload this page.</p>"
+        )
