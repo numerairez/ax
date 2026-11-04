@@ -4,10 +4,10 @@ from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import structure
-from .engine import investigate, registry
-from .store import Dataset, Store
+from .engine import core, investigate, registry
+from .store import SAMPLE_ROWS, Dataset, Store
 
-app = FastAPI(title="Vega Explorer API")
+app = FastAPI(title="Narra API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -70,6 +70,21 @@ def delete_dataset(dataset_id: str) -> dict:
 @app.get("/api/lead-kinds")
 def lead_kinds() -> list[dict]:
     return [{"name": k.name, "icon": k.icon, "description": k.description} for k in registry.ordered()]
+
+
+@app.get("/api/method")
+def method() -> dict:
+    """The ranking constants and registered lead kinds, for the "How it works" page."""
+    return {
+        "strengths": [{"name": n, "pBelow": below, "factor": f} for n, below, f in core.STRENGTHS],
+        "descriptiveFactor": core.DESCRIPTIVE_FACTOR,
+        "seenPenalty": core.SEEN_PENALTY,
+        "menuSize": core.MENU_SIZE,
+        "smallSelection": core.SMALL_SELECTION,
+        "maxValues": core.MAX_VALUES,
+        "sampleRows": SAMPLE_ROWS,
+        "kinds": [{"name": k.name, "icon": k.icon, "order": k.order, "quota": k.quota, "description": k.description} for k in registry.ordered()],
+    }
 
 
 def _ds(dataset_id: str) -> Dataset:

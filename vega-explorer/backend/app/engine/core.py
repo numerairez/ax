@@ -30,6 +30,12 @@ from .stats import SUMS, clean, combine, derive, period_label
 FREQ = {"day": "D", "week": "W", "month": "M", "quarter": "Q", "year": "Y"}
 OFFSET = {"day": "days", "week": "weeks", "month": "months", "quarter": "months", "year": "years"}
 MAX_VALUES = 60
+# Ranking: rank = score x evidence factor + adjustments. Exposed at /api/method.
+STRENGTHS = [("strong", 0.001, 1.0), ("suggestive", 0.05, 0.8), ("weak", 1.0, 0.4)]  # (name, adjusted p below, factor)
+DESCRIPTIVE_FACTOR = 0.75  # leads without a test: a summary, neither rewarded nor punished much
+SEEN_PENALTY = -0.3  # already shown earlier on this path
+MENU_SIZE = 8
+SMALL_SELECTION = 30
 PERIOD = "__p"  # group-by key for the time period
 BASELINES = ("siblings", "prior", "yoy")
 
@@ -280,7 +286,16 @@ class Engine:
 
     def lead(self, kind: str, field: str, title: str, reason: str, score: float, p: float | None, view: dict) -> dict:
         return {"id": f"{kind}:{field}", "kind": kind, "field": field, "title": title, "reason": reason,
-                "score": float(score), "p": p, "bonus": 0.0, "tags": [], "view": view}
+                "score": float(score), "p": p, "tags": [], "view": view, "adjust": [], "scoreNotes": []}
+
+    def bonus(self, lead: dict, amount: float, why: str) -> None:
+        """Add to (or, if negative, take from) a lead's rank, saying why: shown in "Why this chart?"."""
+        lead["adjust"].append({"label": why, "value": float(amount)})
+
+    def penalize(self, lead: dict, factor: float, why: str) -> None:
+        """Scale a lead's score, saying why."""
+        lead["score"] *= factor
+        lead["scoreNotes"].append({"label": why, "factor": float(factor)})
 
     def run(self) -> dict:
         kinds = registry.ordered(self.only)
@@ -293,17 +308,18 @@ class Engine:
         for lead in leads:
             p = lead.pop("p")
             if p is None:
-                lead["strength"], lead["pAdj"] = "descriptive", None
-                factor = 0.75
+                lead["strength"], lead["pAdj"], factor = "descriptive", None, DESCRIPTIVE_FACTOR
             else:
                 p_adj = min(1.0, p * max(1, total_tests))
                 lead["pAdj"] = p_adj
-                lead["strength"] = "strong" if p_adj < 0.001 else "suggestive" if p_adj < 0.05 else "weak"
-                factor = {"strong": 1.0, "suggestive": 0.8, "weak": 0.4}[lead["strength"]]
+                lead["strength"], factor = next((name, f) for name, below, f in STRENGTHS if p_adj < below or name == "weak")
             if lead["id"] in self.seen:
-                lead["bonus"] -= 0.3
+                self.bonus(lead, SEEN_PENALTY, "already shown earlier on this path")
                 lead["tags"].append("seen")
-            lead["rank"] = lead["score"] * factor + lead.pop("bonus")
+            adjust = sum(a["value"] for a in lead["adjust"])
+            lead["rank"] = lead["score"] * factor + adjust
+            lead["why"] = {"score": lead["score"], "scoreNotes": lead.pop("scoreNotes"), "factor": factor,
+                           "adjust": lead.pop("adjust"), "rank": lead["rank"], "pRaw": p, "tests": total_tests}
         leads.sort(key=lambda x: x["rank"], reverse=True)
         # Keep the menu varied: a quota per kind, but always offer the next level
         # down the hierarchy, which is where a click naturally leads.
@@ -319,7 +335,7 @@ class Engine:
             if per_kind[kind] <= quota.get(lead["kind"], 3):
                 varied.append(lead)
         n = self.count(self.sel_w)
-        caution = f"Only {n} records in this selection — treat patterns with care." if n < 30 else None
+        caution = f"Only {n} records in this selection — treat patterns with care." if n < SMALL_SELECTION else None
         return clean(
             {
                 "context": {
@@ -335,7 +351,8 @@ class Engine:
                     "bgN": self.count(self.bg_w) if self.has_bg else 0,
                     "caution": caution,
                 },
-                "leads": varied[:8],
+                "leads": varied[:MENU_SIZE],
+                "candidates": len(leads),
                 "tests": self.tests,
             }
         )

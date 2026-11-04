@@ -69,5 +69,5 @@ def trend(e: Engine) -> list[dict]:
         view["compareWindow"] = list(e.compare_window)
     lead = e.lead("trend", e.tf, f"{e.mlabel} over time", reason, score, p, view)
     if not e.filters:
-        lead["bonus"] += 0.4  # the natural starting point
+        e.bonus(lead, 0.4, "start of an investigation: the trend is the natural first view")
     return [lead]

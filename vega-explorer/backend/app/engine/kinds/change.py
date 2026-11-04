@@ -14,7 +14,8 @@ from ..stats import chi2_counts, fmt
 def changes(e: Engine) -> list[dict]:
     """After brushing a time range, or against a prior-period baseline: which values drove the change."""
     if e.baseline != "siblings":
-        after_w, before_w, span, bonus = e.sel_w, e.bg_w, e.span, 0.25
+        after_w, before_w, span = e.sel_w, e.bg_w, e.span
+        bonus = (0.25, f"you are comparing with the {e.span}, so what changed is the question")
         if not e.has_bg:
             return []
     else:
@@ -31,7 +32,7 @@ def changes(e: Engine) -> list[dict]:
         after_w = e.sel_w
         span = f"previous {k} {e.grain}{'s' if k > 1 else ''}"
         # Answer the question the brush asked, even if the evidence is weak.
-        bonus = 0.5
+        bonus = (0.5, "you brushed a time range: this answers what changed in it")
     tot_a, tot_b = e.total(after_w), e.total(before_w)
     rel = (tot_a - tot_b) / abs(tot_b) if tot_b else float("nan")
     out = []
@@ -59,6 +60,6 @@ def changes(e: Engine) -> list[dict]:
         rows = [{"value": str(i), "before": gb[i], "after": ga[i], "delta": delta[i]} for i in delta.abs().sort_values(ascending=False).index[:20]]
         lead = e.lead("change", d, f"What drove the change, by {d}", reason, score, p,
                       {"type": "change", "field": d, "rows": rows, "span": span})
-        lead["bonus"] += bonus
+        e.bonus(lead, *bonus)
         out.append(lead)
     return out

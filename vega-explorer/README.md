@@ -1,6 +1,14 @@
-# Vega Explorer
+# Narra
 
-A browsable library of 65 Vega and Vega-Lite chart techniques. Each chart is auto-mapped to whichever dataset you pick. You can remap fields, change options, try themes and palettes, and edit the raw spec live.
+<img src="frontend/public/favicon.svg" width="64" alt="Narra logo: a narra tree whose branches are an investigation trail">
+
+**Narra** is for *narrative*, and for the narra tree. You follow one story through the data, and it branches wherever a lead does. The logo is that tree: a broad narra crown, with the branch you followed drawn bold from root to a golden blossom, and the leads you didn't take beside it.
+
+Narra has three parts:
+
+- **Investigate:** click a chart and Narra picks the next one. Each step compares your selection with a comparison group, and leads are ranked by effect size and multiple-testing-adjusted evidence. Every step stays on the page as a story you can rewind or branch.
+- **Chart library:** 65 Vega and Vega-Lite chart techniques, each auto-mapped to whichever dataset you pick. You can remap fields, change options, try themes and palettes, and edit the raw spec live.
+- **How it works:** the method, inside the app, with the engine's live ranking constants.
 
 ```
 ./start.sh          # backend on :8000, frontend on :5173 (opens the browser)

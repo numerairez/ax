@@ -84,6 +84,16 @@ export interface Lead {
   pAdj: number | null
   tags: string[]
   view: LeadView
+  /** How the rank was computed: rank = score × factor + Σ adjust. */
+  why: {
+    score: number
+    scoreNotes: { label: string; factor: number }[]
+    factor: number
+    adjust: { label: string; value: number }[]
+    rank: number
+    pRaw: number | null
+    tests: number
+  }
 }
 
 export interface InvestigateResponse {
@@ -101,6 +111,8 @@ export interface InvestigateResponse {
     caution: string | null
   }
   leads: Lead[]
+  /** Leads scored before the menu was trimmed to the best few. */
+  candidates: number
   tests: number
 }
 

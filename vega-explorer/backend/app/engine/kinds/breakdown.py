@@ -31,10 +31,10 @@ def breakdowns(e: Engine) -> list[dict]:
             _flag_mix(e, lead, like)
         parent = e.meta[d].get("parent")
         if e.last and e.last["op"] == "eq" and parent == e.last["field"]:
-            lead["bonus"] += 0.2
+            e.bonus(lead, 0.2, f"drills down from {e.last['field']}, the level you just clicked")
             lead["tags"].append("drill down")
         elif not e.filters and not parent:
-            lead["bonus"] += 0.1  # start broad: top-level dimensions first
+            e.bonus(lead, 0.1, "start broad: a top-level dimension at the start")
         out.append(lead)
     return out
 
@@ -161,5 +161,5 @@ def _flag_mix(e: Engine, lead: dict, like: dict) -> None:
     else:
         lead["reason"] += f". Like-for-like it is also {'higher' if a > b else 'lower'} ({per}), but on too few records to rule out mix"
         return
-    lead["score"] *= 0.35
+    e.penalize(lead, 0.35, "mix effect: the share gap comes from what the selection holds, not how it behaves")
     lead["tags"].append("mix effect")

@@ -1,6 +1,18 @@
 import type { Baseline, InvestigateResponse, Structure } from './investigate/types.ts'
 import type { Dataset, DatasetMeta } from './types.ts'
 
+/** Ranking constants and registered lead kinds, served by the engine. */
+export interface Method {
+  strengths: { name: string; pBelow: number; factor: number }[]
+  descriptiveFactor: number
+  seenPenalty: number
+  menuSize: number
+  smallSelection: number
+  maxValues: number
+  sampleRows: number
+  kinds: { name: string; icon: string; order: number; quota: number; description: string }[]
+}
+
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let msg = `${res.status} ${res.statusText}`
@@ -38,5 +50,6 @@ export const api = {
     fetch(`/api/datasets/${encodeURIComponent(id)}/investigate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then((r) =>
       json<InvestigateResponse>(r),
     ),
+  method: () => fetch('/api/method').then((r) => json<Method>(r)),
   remove: (id: string) => fetch(`/api/datasets/${encodeURIComponent(id)}`, { method: 'DELETE' }).then((r) => json<{ ok: boolean }>(r)),
 }

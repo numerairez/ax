@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api.ts'
 import { Controls } from './components/Controls.tsx'
 import { DataPanel } from './components/DataPanel.tsx'
+import { HowItWorks } from './components/HowItWorks.tsx'
 import { Investigate } from './investigate/Investigate.tsx'
 import { SpecEditor } from './components/SpecEditor.tsx'
 import { DARK_THEMES, THEMES, Thumbnail, VegaView, type Theme } from './components/VegaView.tsx'
@@ -22,14 +23,16 @@ import './App.css'
 const CAT_SCHEMES = ['tableau10', 'observable10', 'category10', 'set2', 'dark2', 'paired', 'accent', 'tableau20', 'pastel1', 'set1']
 const SEQ_SCHEMES = ['viridis', 'magma', 'inferno', 'plasma', 'turbo', 'cividis', 'blues', 'greens', 'oranges', 'purples', 'teals', 'goldred', 'yelloworangered', 'bluepurple', 'redyellowblue', 'spectral']
 
+// Kept from the app's earlier name so saved preferences survive the rename.
 const STORE_KEY = 'vega-explorer:v1'
+type Mode = 'library' | 'investigate' | 'method'
 interface Saved {
   datasetId?: string
   templateId?: string | null
   theme?: Theme
   cat?: string
   seq?: string
-  mode?: 'library' | 'investigate'
+  mode?: Mode
 }
 function load(): Saved {
   try {
@@ -55,7 +58,15 @@ export default function App() {
   const [theme, setTheme] = useState<Theme>(saved.theme ?? 'default')
   const [cat, setCat] = useState(saved.cat ?? 'tableau10')
   const [seq, setSeq] = useState(saved.seq ?? 'viridis')
-  const [mode, setMode] = useState<'library' | 'investigate'>(saved.mode ?? 'library')
+  const [mode, setMode] = useState<Mode>(saved.mode ?? 'library')
+  const [methodSection, setMethodSection] = useState<string | undefined>()
+  // Reading “How it works” from an investigation keeps the investigation alive underneath.
+  const [returnTo, setReturnTo] = useState<Mode | null>(null)
+  const openMethod = (section?: string) => {
+    setMethodSection(section)
+    setReturnTo(mode === 'method' ? returnTo : mode)
+    setMode('method')
+  }
   const [search, setSearch] = useState('')
   const [loadError, setLoadError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -170,7 +181,7 @@ export default function App() {
     <div className={`app ${DARK_THEMES.has(theme) ? 'chart-dark' : ''}`}>
       <header className="topbar">
         <button className="brand" onClick={() => setTemplateId(null)} title="Back to gallery">
-          <span className="logo">◆</span> Vega Explorer
+          <img className="logo" src="/favicon.svg" alt="" width={26} height={26} /> Narra
         </button>
         <div className="modes" role="tablist">
           <button role="tab" aria-selected={mode === 'library'} className={mode === 'library' ? 'active' : ''} onClick={() => setMode('library')}>
@@ -178,6 +189,14 @@ export default function App() {
           </button>
           <button role="tab" aria-selected={mode === 'investigate'} className={mode === 'investigate' ? 'active' : ''} onClick={() => setMode('investigate')}>
             ✦ Investigate
+          </button>
+          <button
+            role="tab"
+            aria-selected={mode === 'method'}
+            className={mode === 'method' ? 'active' : ''}
+            onClick={() => mode !== 'method' && openMethod()}
+          >
+            How it works
           </button>
         </div>
         <div className="topbar-group">
@@ -225,7 +244,7 @@ export default function App() {
           )}
           {busy && <span className="spinner" aria-label="Loading" />}
         </div>
-        <div className={`topbar-group right ${mode === 'investigate' ? 'hidden' : ''}`}>
+        <div className={`topbar-group right ${mode !== 'library' ? 'hidden' : ''}`}>
           <label className="field">
             <span>Theme</span>
             <select value={theme} onChange={(e) => setTheme(e.target.value as Theme)}>
@@ -262,11 +281,20 @@ export default function App() {
         </div>
       )}
 
-      {mode === 'investigate' ? (
-        <main className="main investigate-main">
-          {dataset ? <Investigate key={dataset.meta.id} meta={dataset.meta} /> : <div className="empty">Loading datasets…</div>}
+      {mode === 'method' && (
+        <main className="main">
+          <HowItWorks
+            section={methodSection}
+            onBack={returnTo === 'investigate' ? () => setMode('investigate') : undefined}
+          />
         </main>
-      ) : (
+      )}
+      {(mode === 'investigate' || (mode === 'method' && returnTo === 'investigate')) && (
+        <main className="main investigate-main" hidden={mode !== 'investigate'}>
+          {dataset ? <Investigate key={dataset.meta.id} meta={dataset.meta} onExplain={openMethod} /> : <div className="empty">Loading datasets…</div>}
+        </main>
+      )}
+      {mode === 'library' && (
       <div className="layout">
         <aside className="sidebar">
           <input className="search" placeholder={`Search ${TEMPLATES.length} charts…`} value={search} onChange={(e) => setSearch(e.target.value)} />

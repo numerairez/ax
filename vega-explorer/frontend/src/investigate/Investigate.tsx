@@ -15,7 +15,7 @@ const BASELINES: { value: Baseline; label: string; title: string }[] = [
 ]
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-export function Investigate({ meta }: { meta: DatasetMeta }) {
+export function Investigate({ meta, onExplain }: { meta: DatasetMeta; onExplain: (section?: string) => void }) {
   const [structure, setStructure] = useState<Structure | null>(null)
   const [editing, setEditing] = useState(false)
   const [steps, setSteps] = useState<Step[]>([])
@@ -278,7 +278,10 @@ export function Investigate({ meta }: { meta: DatasetMeta }) {
           <div className="inv-h">Trail</div>
           <Trail steps={steps} currentId={currentId} onPick={setCurrentId} />
           <div className="honesty" title="Every comparison the engine runs is counted. p-values are multiplied by this number (Bonferroni), so the more leads you chase, the stronger evidence must be to be called “strong”.">
-            <b>{tests.toLocaleString()}</b> comparisons tested so far. Significance is adjusted for all of them.
+            <b>{tests.toLocaleString()}</b> comparisons tested so far. Significance is adjusted for all of them.{' '}
+            <button className="link" onClick={() => onExplain('honesty')}>
+              Why?
+            </button>
           </div>
         </aside>
 
@@ -298,6 +301,7 @@ export function Investigate({ meta }: { meta: DatasetMeta }) {
                   onFollowPending={() => pending && follow(pending.g, step)}
                   onClearPending={() => setPending(null)}
                   onFocus={() => setCurrentId(step.id)}
+                  onExplain={onExplain}
                 />
               </div>
             )
@@ -369,9 +373,10 @@ interface StoryCardProps {
   onFollowPending: () => void
   onClearPending: () => void
   onFocus: () => void
+  onExplain: (section?: string) => void
 }
 
-function StoryCard({ step, index, isCurrent, picked, pending, onGesture, onFollowPending, onClearPending, onFocus }: StoryCardProps) {
+function StoryCard({ step, index, isCurrent, picked, pending, onGesture, onFollowPending, onClearPending, onFocus, onExplain }: StoryCardProps) {
   const ctx = step.res.context
   const lead = step.res.leads.find((l) => l.id === step.leadId) ?? step.res.leads[0] ?? null
   return (
@@ -401,6 +406,7 @@ function StoryCard({ step, index, isCurrent, picked, pending, onGesture, onFollo
                 <span className="kind">{iconOf(lead)}</span> {lead.title}
               </h2>
               <p className="reason">{lead.reason}</p>
+              <WhyChosen step={step} lead={lead} onExplain={onExplain} />
             </>
           )}
         </div>
@@ -434,6 +440,72 @@ function StoryCard({ step, index, isCurrent, picked, pending, onGesture, onFollo
       {!isCurrent && !pending && <div className="story-fork-hint">Click a different bar or period here to branch off from this step.</div>}
     </div>
   )
+}
+
+/** The ranking arithmetic for the lead a step shows: rank = score × evidence factor + adjustments. */
+function WhyChosen({ step, lead, onExplain }: { step: Step; lead: Lead; onExplain: (section?: string) => void }) {
+  const w = lead.why
+  if (!w) return null
+  const leads = step.res.leads
+  const pos = leads.findIndex((l) => l.id === lead.id)
+  const runnerUp = pos === 0 ? leads[1] : leads[0]
+  const n = (x: number) => x.toFixed(2)
+  const sign = (x: number) => (x >= 0 ? `+ ${n(x)}` : `− ${n(-x)}`)
+  const evidence =
+    lead.strength === 'descriptive'
+      ? 'descriptive: no test applies'
+      : `${lead.strength}: adjusted p ≈ ${fmtP(lead.pAdj)} (raw p ${fmtP(w.pRaw)} × ${w.tests.toLocaleString()} comparisons so far, capped at 1)`
+  return (
+    <details className="why">
+      <summary>{pos === 0 ? 'Why this chart?' : `Why is this lead #${pos + 1}?`}</summary>
+      <div className="why-body">
+        <table>
+          <tbody>
+            <tr>
+              <td>Effect size</td>
+              <td className="num">{n(w.score)}</td>
+              <td className="muted">how big the difference is, 0 to 1 ({lead.kind} score)</td>
+            </tr>
+            {w.scoreNotes.map((s) => (
+              <tr key={s.label}>
+                <td />
+                <td className="num muted">(× {s.factor})</td>
+                <td className="muted">already applied: {s.label}</td>
+              </tr>
+            ))}
+            <tr>
+              <td>× Evidence</td>
+              <td className="num">{w.factor}</td>
+              <td className="muted">{evidence}</td>
+            </tr>
+            {w.adjust.map((a) => (
+              <tr key={a.label}>
+                <td>{a.value >= 0 ? '+ Bonus' : '− Penalty'}</td>
+                <td className="num">{sign(a.value)}</td>
+                <td className="muted">{a.label}</td>
+              </tr>
+            ))}
+            <tr className="total">
+              <td>= Rank</td>
+              <td className="num">{n(w.rank)}</td>
+              <td className="muted">
+                {pos === 0 ? '1st' : `#${pos + 1}`} of {step.res.candidates} candidate leads
+                {runnerUp ? `; ${pos === 0 ? 'runner-up' : 'top'}: ${runnerUp.title} at ${n(runnerUp.why.rank)}` : ''}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <button className="link" onClick={() => onExplain('ranking')}>
+          How ranking works →
+        </button>
+      </div>
+    </details>
+  )
+}
+
+function fmtP(p: number | null): string {
+  if (p == null) return '—'
+  return p < 0.0001 ? '<0.0001' : p.toPrecision(2)
 }
 
 /** "How to read this": what the chart shows and what each mark means. Open on the current step. */
