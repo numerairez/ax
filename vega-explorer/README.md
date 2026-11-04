@@ -62,11 +62,11 @@ This is a prototype of an analytical experience where you follow leads by clicki
 4. **Lead engine** (`backend/app/engine/`). `core.py` turns the filter path and baseline into SQL for the selection and its comparison group. Tests run on grouped sufficient statistics (`stats.py`), so nothing is computed row by row in Python. Each lead kind is a plugin in `engine/kinds/`:
    - **breakdown:** how the selection splits along a dimension, compared with that comparison group
    - **like-for-like:** each value against *the same value* in the comparison group, as an average per record. Share-based breakdowns are cross-checked against it. When a value's bigger share comes from what the selection holds, not from how it behaves, the lead is tagged *mix effect* and ranked lower.
-   - **trend:** the most anomalous period
+   - **trend:** unusual periods, each compared with the median of its two neighbours either side (never itself), and kept only if significant after adjusting for every comparison so far. Consecutive unusual periods form one stretch, labelled at its peak. With none, the lead reports the overall drift, and the chart marks only what the text claims.
    - **driver:** another measure that differs (Cohen's d)
    - **change:** after brushing a time range, or with a time baseline, which values drove the change
    - **target:** values on the other side of their target from the selection as a whole. Dimensions defined by the target, such as a breach/within-tolerance status, are skipped as circular.
-   - **relationship:** across a dimension's values, another level or rate that moves with the measure (Spearman). It is drawn with the chart library's scatter template.
+   - **relationship:** across a dimension's values, another level or rate that moves with the measure (Spearman). It is drawn with the chart library's scatter template. It is offered from the second step on, since it explains a selection.
 
    The top lead becomes the next chart, and the rest are shown as lead cards. Every step stays on the page as a story. The bar or period you followed stays highlighted. Clicking something else in an earlier chart branches from that step.
 5. **Honesty.** Every comparison is counted across the whole session, and p-values are Bonferroni-adjusted by that running total. Leads are labelled strong, suggestive, weak or descriptive.

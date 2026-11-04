@@ -306,6 +306,10 @@ class Engine:
                 leads.append(lead)
         total_tests = self.tests_before + self.tests
         for lead in leads:
+            # A kind whose claim depends on the final comparison count (what is significant)
+            # settles its wording, p and markers here, so the chart and the sentence agree.
+            if fin := lead.pop("finalize", None):
+                fin(lead, total_tests)
             p = lead.pop("p")
             if p is None:
                 lead["strength"], lead["pAdj"], factor = "descriptive", None, DESCRIPTIVE_FACTOR

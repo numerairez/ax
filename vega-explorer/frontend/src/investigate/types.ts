@@ -61,6 +61,8 @@ export interface LeadView {
   targetLabel?: string
   /** Prior-period baselines: the window being looked at and the one it is compared with. */
   window?: [string, string]
+  /** Trend: consecutive unusual periods, first and last. */
+  episode?: [string, string]
   compareWindow?: [string, string]
   /** type "template": draw with a chart-library template. */
   template?: string

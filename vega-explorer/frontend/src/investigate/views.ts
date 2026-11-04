@@ -7,6 +7,8 @@ const ACCENT = '#4f46e5'
 const UNDER = '#a5a9b8'
 const ALERT = '#e4572e'
 const GOOD = '#2f9e6b'
+// Narra's blossom gold, from the logo: marks what stands out in time.
+const GOLD = '#f5b301'
 
 export function fmt(v: unknown): string {
   const n = Number(v)
@@ -275,12 +277,14 @@ function trendGuide({ view: v }: Lead, ctx: GuideCtx): Guide {
   const has = (k: string) => v.rows.some((r) => r[k] != null)
   const items: KeyItem[] = [
     { mark: 'line', color: ACCENT, label: `${ctx.measureLabel} per ${v.grain ?? 'period'}` },
-    { mark: 'dash', color: '#888', label: 'typical: median of the 5 surrounding periods' },
+    { mark: 'dash', color: '#888', label: 'typical: median of the 2 periods either side' },
   ]
   if (has('rest')) items.push({ mark: 'dot', color: UNDER, label: `comparison: ${v.restLabel ?? 'rest'}` })
   if (has('target')) items.push({ mark: 'step', color: GOOD, label: v.targetLabel ?? 'target' })
-  if (v.rows.some((r) => r.anomaly)) items.push({ mark: 'point', color: ALERT, label: 'unusual: far outside the normal period-to-period wobble' })
-  if (v.highlight) items.push({ mark: 'rule', color: ALERT, label: 'the most unusual period' })
+  if (v.rows.some((r) => r.anomaly)) items.push({ mark: 'point', color: GOLD, label: 'unusual: too far from typical to be chance, after adjusting for every comparison' })
+  const stretch = v.episode && v.episode[0] !== v.episode[1]
+  if (stretch) items.push({ mark: 'band', color: GOLD, label: 'one unusual stretch: consecutive unusual periods' })
+  if (v.highlight) items.push({ mark: 'rule', color: GOLD, label: stretch ? 'its peak' : 'the unusual period the text describes' })
   if (v.window) items.push({ mark: 'band', color: ACCENT, label: 'now: the period being examined' })
   if (v.compareWindow) items.push({ mark: 'band', color: UNDER, label: 'vs: the period it is compared with' })
   items.push(...followedItem(v, ctx))
@@ -437,22 +441,23 @@ function trend(v: LeadView, label: string, width: number, picked: Filter | null,
         mark: { type: 'point', filled: true, cursor: 'pointer', size: 45 },
         encoding: {
           y: { field: 'value', type: 'quantitative' },
-          color: { condition: { test: 'datum.anomaly', value: ALERT }, value: ACCENT },
+          color: { condition: { test: 'datum.anomaly', value: GOLD }, value: ACCENT },
           size: { condition: { test: 'datum.anomaly', value: 120 }, value: 30 },
           tooltip: [
             { field: 't', type: 'temporal', title: 'period' },
             { field: 'value', format: ',.3~s', title: label },
-            { field: 'baseline', format: ',.3~s', title: 'typical (rolling median)' },
+            { field: 'baseline', format: ',.3~s', title: 'typical (median of neighbours)' },
             ...(hasRest ? [{ field: 'rest', format: ',.3~s', title: v.restLabel ?? 'rest' }] : []),
             ...(hasTarget ? [{ field: 'target', format: ',.3~s', title: v.targetLabel ?? 'target' }] : []),
           ],
         },
       },
+      ...(v.episode && v.episode[0] !== v.episode[1] ? band(v.episode, GOLD, '') : []),
       ...(v.highlight
         ? [
             {
               data: { values: [{ t: v.highlight }] },
-              mark: { type: 'rule', color: ALERT, strokeDash: [2, 2] },
+              mark: { type: 'rule', color: GOLD, strokeDash: [2, 2], strokeWidth: 1.5 },
               encoding: { x: { field: 't', type: 'temporal' } },
             },
           ]

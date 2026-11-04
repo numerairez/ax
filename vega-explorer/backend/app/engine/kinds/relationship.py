@@ -28,7 +28,9 @@ def _axis(m: Measure) -> str:
 @lead_kind("relationship", icon="⋰", order=60, quota=2)
 def relationships(e: Engine) -> list[dict]:
     """Another measure whose level tracks this one across a dimension's values (Spearman)."""
-    if e.m.id == COUNT:
+    # A relationship explains a selection; at the start there is nothing yet to explain, and
+    # the opening view should be broad rather than a detail-level correlation.
+    if e.m.id == COUNT or not e.filters:
         return []
     # Levels and rates stored as fields (quote age, rating) explain; totals mostly restate size,
     # and calculated ratios are often built from the measure itself. This also keeps the test count small.
