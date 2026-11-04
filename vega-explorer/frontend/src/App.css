@@ -1229,6 +1229,70 @@ td.num {
   background: var(--bg);
   padding: 2px 4px;
 }
+/* Children of the same parent, side by side; scrolls sideways when there are many */
+.story-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 0 16px;
+  align-items: start;
+}
+.story-col {
+  min-width: 0;
+}
+.story-link.brief {
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+.story-link.brief .story-link-what {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.story-link.brief .muted {
+  white-space: nowrap;
+  margin-left: auto;
+}
+/* Side-by-side cards share one size so they read as a comparison; the border marks the current one */
+.story-card.side {
+  padding: 14px 14px 12px;
+}
+.story-card.side h2 {
+  font-size: 15px;
+}
+.story-card.side .reason {
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+.story-card.side .inv-chart {
+  margin-top: 6px;
+}
+.story-card {
+  position: relative;
+}
+.story-card .inv-card-head {
+  padding-right: 22px;
+}
+.card-x {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.card-x:hover {
+  background: var(--accent-soft);
+  color: var(--text);
+}
 .story-fork-hint {
   font-size: 12px;
   color: var(--muted);
@@ -1241,6 +1305,85 @@ td.num {
   margin: 14px 0 0 26px;
   color: var(--muted);
   font-size: 13px;
+}
+
+/* Story view: the narrative tree */
+.story-view-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.story-view-head h2 {
+  margin: 0 0 4px;
+  font-size: 18px;
+}
+.story-view-head p {
+  margin: 0;
+  font-size: 13px;
+}
+.story-view-actions {
+  display: flex;
+  gap: 8px;
+}
+.story-tree,
+.story-tree ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.story-tree ul {
+  margin-left: 14px;
+  padding-left: 16px;
+  border-left: 2px dashed var(--border);
+}
+.story-tree li {
+  margin-top: 10px;
+}
+.note {
+  position: relative;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 40px 10px 14px;
+}
+.note.current {
+  border-color: var(--accent);
+}
+.note-how {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+.note-head {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+}
+.note-title {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-weight: 650;
+  font-size: 14.5px;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.note-title:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.note-finding {
+  margin: 4px 0;
+  font-size: 13.5px;
+}
+.note-scope {
+  font-size: 12px;
+  color: var(--muted);
 }
 
 /* ---------- chart keys ("how to read this") ---------- */

@@ -3,6 +3,7 @@ import embed, { type Result } from 'vega-embed'
 import { api } from '../api.ts'
 import type { DatasetMeta } from '../types.ts'
 import { StructureSetup } from './StructureSetup.tsx'
+import { buildNarrative, narrativeMarkdown, type Narrative, type NarrativeNote } from './narrative.ts'
 import { COUNT, type Baseline, type Filter, type Gesture, type Lead, type Step, type Structure } from './types.ts'
 import { autoGesture, buildSpec, fmt, guideOf, iconOf, viewOf, type KeyItem } from './views.ts'
 
@@ -26,11 +27,13 @@ export function Investigate({ meta, onExplain }: { meta: DatasetMeta; onExplain:
   const [pending, setPending] = useState<Pending | null>(null)
   const [pilot, setPilot] = useState(false)
   const [baseline, setBaseline] = useState<Baseline>('siblings')
+  const [showStory, setShowStory] = useState(false)
   const testsRef = useRef(0)
   const nextId = useRef(1)
   const stepsRef = useRef<Step[]>([])
   const pilotRef = useRef(false)
   const storyEnd = useRef<HTMLDivElement>(null)
+  const mainRef = useRef<HTMLElement>(null)
 
   useEffect(() => {
     stepsRef.current = steps
@@ -113,10 +116,25 @@ export function Investigate({ meta, onExplain }: { meta: DatasetMeta; onExplain:
 
   const current = steps.find((s) => s.id === currentId) ?? null
 
-  // Bring the newest chart into view; earlier ones stay above it.
+  // Bring the newest chart into view; earlier ones stay above it, siblings beside it.
   useEffect(() => {
-    if (currentId != null || loading) storyEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+    const card = mainRef.current?.querySelector('.story-card.current')
+    if (card && !loading) card.scrollIntoView({ behavior: 'smooth', block: 'end', inline: 'nearest' })
+    else if (currentId != null || loading) storyEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
   }, [currentId, loading])
+
+  /** Delete a step and everything followed from it. The comparisons it ran stay counted. */
+  const remove = (step: Step) => {
+    const doomed = new Set([step.id])
+    for (const s of stepsRef.current) if (s.parent != null && doomed.has(s.parent)) doomed.add(s.id)
+    stepsRef.current = stepsRef.current.filter((s) => !doomed.has(s.id))
+    setSteps(stepsRef.current)
+    if (currentId != null && doomed.has(currentId)) {
+      const sibling = stepsRef.current.filter((s) => s.parent === step.parent).at(-1)
+      setCurrentId(sibling?.id ?? step.parent)
+    }
+    if (pending && doomed.has(pending.stepId)) setPending(null)
+  }
 
   const follow = (g: Gesture, from: Step | null = current) => {
     if (!from) return Promise.resolve(null)
@@ -190,8 +208,11 @@ export function Investigate({ meta, onExplain }: { meta: DatasetMeta; onExplain:
   }
 
   const chain = current ? chainOf(current.id, steps) : []
+  // Each level of the story shows every child of the same parent side by side; the path continues from the one on the chain.
+  const rows = chain.map((step) => steps.filter((s) => s.parent === step.parent))
   const measures = structure.fields.filter((f) => f.role === 'measure')
   const shownBaseline = current?.baseline ?? baseline
+  const story = buildNarrative(steps, meta.name, tests)
 
   return (
     <div className="inv">
@@ -255,6 +276,9 @@ export function Investigate({ meta, onExplain }: { meta: DatasetMeta; onExplain:
               ))}
             </select>
           </label>
+          <button className={`btn ${showStory ? 'primary' : ''}`} onClick={() => setShowStory((v) => !v)} title="The findings from every chart you kept, as a tree">
+            {showStory ? '◧ Charts' : '¶ Story'}
+          </button>
           <button className={`btn ${pilot ? 'primary' : ''}`} onClick={runPilot} disabled={!current || (loading && !pilot)} title="Follow the strongest actionable lead, up to 4 steps">
             {pilot ? '■ Stop autopilot' : '✦ Autopilot'}
           </button>
@@ -285,35 +309,61 @@ export function Investigate({ meta, onExplain }: { meta: DatasetMeta; onExplain:
           </div>
         </aside>
 
-        <section className="inv-main">
-          {chain.map((step, i) => {
-            const next = chain[i + 1]
-            return (
-              <div key={`${step.id}:${step.leadId}`}>
-                {i > 0 && <Connector from={chain[i - 1]} to={step} />}
-                <StoryCard
-                  step={step}
-                  index={i + 1}
-                  isCurrent={!next}
-                  picked={next ? addedFilter(step, next) : null}
-                  pending={pending?.stepId === step.id ? pending.g : null}
-                  onGesture={(g, immediate) => (immediate ? follow(g, step) : setPending({ stepId: step.id, g }))}
-                  onFollowPending={() => pending && follow(pending.g, step)}
-                  onClearPending={() => setPending(null)}
-                  onFocus={() => setCurrentId(step.id)}
-                  onExplain={onExplain}
-                />
+        {showStory ? (
+          <section className="inv-main">
+            <StoryView
+              story={story}
+              currentId={currentId}
+              onOpen={(id) => {
+                setCurrentId(id)
+                setShowStory(false)
+              }}
+              onRemove={pilot ? undefined : (id) => {
+                const s = steps.find((x) => x.id === id)
+                if (s) remove(s)
+              }}
+            />
+          </section>
+        ) : (
+          <section className="inv-main" ref={mainRef}>
+            {rows.map((row, i) => (
+              <div key={i} className={row.length > 1 ? 'story-row' : undefined}>
+                {row.map((step) => {
+                  const onChain = step.id === chain[i].id
+                  const next = onChain ? chain[i + 1] : undefined
+                  const side = row.length > 1
+                  return (
+                    <div key={`${step.id}:${step.leadId}`} className="story-col">
+                      {i > 0 && <Connector from={chain[i - 1]} to={step} brief={side} />}
+                      <StoryCard
+                        step={step}
+                        index={i + 1}
+                        side={side}
+                        isCurrent={step.id === currentId}
+                        picked={next ? addedFilter(step, next) : null}
+                        pending={pending?.stepId === step.id ? pending.g : null}
+                        onGesture={(g, immediate) => (immediate ? follow(g, step) : setPending({ stepId: step.id, g }))}
+                        onFollowPending={() => pending && follow(pending.g, step)}
+                        onClearPending={() => setPending(null)}
+                        onFocus={() => setCurrentId(step.id)}
+                        onRemove={pilot || (step.parent == null && row.length === 1) ? undefined : () => remove(step)}
+                        focusLabel={onChain ? 'rewind here' : 'continue from here'}
+                        onExplain={onExplain}
+                      />
+                    </div>
+                  )
+                })}
               </div>
-            )
-          })}
-          {loading && (
-            <div className="story-thinking">
-              <span className="spinner" /> Choosing the next view…
-            </div>
-          )}
-          {error && <div className="error">⚠ {error}</div>}
-          <div ref={storyEnd} />
-        </section>
+            ))}
+            {loading && (
+              <div className="story-thinking">
+                <span className="spinner" /> Choosing the next view…
+              </div>
+            )}
+            {error && <div className="error">⚠ {error}</div>}
+            <div ref={storyEnd} />
+          </section>
+        )}
 
         <aside className="inv-leads">
           <div className="inv-h">Leads from here</div>
@@ -340,6 +390,68 @@ export function Investigate({ meta, onExplain }: { meta: DatasetMeta; onExplain:
   )
 }
 
+/** The narrative tree: one note per kept chart, children under the chart they were reached from. */
+function StoryView({ story, currentId, onOpen, onRemove }: { story: Narrative; currentId: number | null; onOpen: (id: number) => void; onRemove?: (id: number) => void }) {
+  const [copied, setCopied] = useState(false)
+  const count = (ns: NarrativeNote[]): number => ns.reduce((a, x) => a + 1 + count(x.children), 0)
+  const copy = async () => {
+    await navigator.clipboard.writeText(narrativeMarkdown(story))
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+  const download = () => {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(story, null, 2)], { type: 'application/json' }))
+    const a = Object.assign(document.createElement('a'), { href: url, download: `${story.dataset.replace(/\W+/g, '-').toLowerCase()}-story.json` })
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+  const render = (x: NarrativeNote, root: boolean): ReactNode => (
+    <li key={x.stepId}>
+      <div className={`note ${x.stepId === currentId ? 'current' : ''}`}>
+        {x.reachedBy && <div className="note-how">↳ {x.reachedBy}</div>}
+        <div className="note-head">
+          <button className="note-title" onClick={() => onOpen(x.stepId)} title="Show this chart">
+            {x.headline}
+          </button>
+          <span className={`strength ${x.strength} small`}>{x.strength}</span>
+          {onRemove && !(root && story.roots.length === 1) && (
+            <button className="card-x" onClick={() => onRemove(x.stepId)} aria-label="Remove this chart" title="Remove this chart, its note and everything followed from it">
+              ×
+            </button>
+          )}
+        </div>
+        <p className="note-finding">{x.finding}</p>
+        <div className="note-scope">
+          {x.path.length ? x.path.join(' › ') : 'All data'} · {x.records.toLocaleString()} records · {x.measure} vs {x.comparedWith}
+          {x.window && ` · ${x.window} vs ${x.compareWindow}`}
+        </div>
+      </div>
+      {x.children.length > 0 && <ul>{x.children.map((c) => render(c, false))}</ul>}
+    </li>
+  )
+  return (
+    <div className="story-view">
+      <div className="story-view-head">
+        <div>
+          <h2>The story so far</h2>
+          <p className="muted">
+            {count(story.roots)} charts · {story.comparisons.toLocaleString()} comparisons tested. Removing a chart removes its note and the notes under it.
+          </p>
+        </div>
+        <div className="story-view-actions">
+          <button className="btn" onClick={copy} title="An indented outline, ready to paste into an LLM to summarize">
+            {copied ? '✓ Copied' : 'Copy as Markdown'}
+          </button>
+          <button className="btn ghost" onClick={download}>
+            Download JSON
+          </button>
+        </div>
+      </div>
+      <ul className="story-tree">{story.roots.map((r) => render(r, true))}</ul>
+    </div>
+  )
+}
+
 /** The filter a step added on top of its parent: the gesture that was followed. */
 function addedFilter(step: Step, next: Step): Filter | null {
   const key = (f: Filter) => JSON.stringify([f.field, f.op, f.value])
@@ -347,14 +459,16 @@ function addedFilter(step: Step, next: Step): Filter | null {
   return next.filters.find((f) => !had.has(key(f))) ?? null
 }
 
-function Connector({ from, to }: { from: Step; to: Step }) {
+/** `brief` drops the verb so connectors above side-by-side cards stay on one line and the cards line up. */
+function Connector({ from, to, brief }: { from: Step; to: Step; brief?: boolean }) {
   const f = addedFilter(from, to)
+  const what = f ? f.label : to.via.replace(/^measure → /, 'measure to ').replace(/^compare → /, 'comparison to ')
   return (
-    <div className="story-link">
+    <div className={`story-link ${brief ? 'brief' : ''}`} title={brief ? what : undefined}>
       <span className="story-arrow">↓</span>
-      <span>
-        {to.via.startsWith('autopilot') ? 'Autopilot followed' : /^(measure|compare) →/.test(to.via) ? 'Switched' : 'You followed'}{' '}
-        <b>{f ? f.label : to.via.replace(/^measure → /, 'measure to ').replace(/^compare → /, 'comparison to ')}</b>
+      <span className="story-link-what">
+        {!brief && (to.via.startsWith('autopilot') ? 'Autopilot followed ' : /^(measure|compare) →/.test(to.via) ? 'Switched ' : 'You followed ')}
+        <b>{what}</b>
       </span>
       <span className="muted">
         {from.res.context.n.toLocaleString()} → {to.res.context.n.toLocaleString()} records
@@ -366,6 +480,8 @@ function Connector({ from, to }: { from: Step; to: Step }) {
 interface StoryCardProps {
   step: Step
   index: number
+  /** One of several children shown side by side: smaller type, fitted chart, details folded away. */
+  side: boolean
   isCurrent: boolean
   picked: Filter | null
   pending: Gesture | null
@@ -373,14 +489,22 @@ interface StoryCardProps {
   onFollowPending: () => void
   onClearPending: () => void
   onFocus: () => void
+  /** Absent for the only starting step (use Restart) and while autopilot runs. */
+  onRemove?: () => void
+  focusLabel: string
   onExplain: (section?: string) => void
 }
 
-function StoryCard({ step, index, isCurrent, picked, pending, onGesture, onFollowPending, onClearPending, onFocus, onExplain }: StoryCardProps) {
+function StoryCard({ step, index, side, isCurrent, picked, pending, onGesture, onFollowPending, onClearPending, onFocus, onRemove, focusLabel, onExplain }: StoryCardProps) {
   const ctx = step.res.context
   const lead = step.res.leads.find((l) => l.id === step.leadId) ?? step.res.leads[0] ?? null
   return (
-    <div className={`inv-card story-card ${isCurrent ? 'current' : 'past'}`}>
+    <div className={`inv-card story-card ${isCurrent ? 'current' : 'past'} ${side ? 'side' : ''}`}>
+      {onRemove && (
+        <button className="card-x" onClick={onRemove} aria-label="Remove this chart" title="Remove this chart and everything followed from it">
+          ×
+        </button>
+      )}
       <div className="inv-card-head">
         <div>
           <div className="story-meta">
@@ -395,8 +519,8 @@ function StoryCard({ step, index, isCurrent, picked, pending, onGesture, onFollo
             )}
             {ctx.bgN > 0 && <span className="muted">vs {ctx.bgN.toLocaleString()} {ctx.bgLabel}</span>}
             {!isCurrent && (
-              <button className="link" onClick={onFocus} title="Rewind to this step and see its other leads">
-                rewind here
+              <button className="link" onClick={onFocus} title="Make this the current step and see its leads">
+                {focusLabel}
               </button>
             )}
           </div>
@@ -415,8 +539,8 @@ function StoryCard({ step, index, isCurrent, picked, pending, onGesture, onFollo
       {ctx.caution && isCurrent && <div className="banner warn">{ctx.caution}</div>}
       {lead ? (
         <>
-          <LeadChart lead={lead} measureLabel={ctx.measureLabel} picked={picked} compact={!isCurrent} onGesture={onGesture} />
-          <ChartKey lead={lead} measureLabel={ctx.measureLabel} bgLabel={ctx.bgLabel} picked={picked} open={isCurrent} />
+          <LeadChart lead={lead} measureLabel={ctx.measureLabel} picked={picked} compact={!isCurrent || side} fit={side} onGesture={onGesture} />
+          <ChartKey lead={lead} measureLabel={ctx.measureLabel} bgLabel={ctx.bgLabel} picked={picked} open={isCurrent && !side} />
         </>
       ) : (
         <div className="empty">Nothing stands out here. Try another measure or step back.</div>
@@ -437,7 +561,7 @@ function StoryCard({ step, index, isCurrent, picked, pending, onGesture, onFollo
           )}
         </div>
       )}
-      {!isCurrent && !pending && <div className="story-fork-hint">Click a different bar or period here to branch off from this step.</div>}
+      {!isCurrent && !pending && !side && <div className="story-fork-hint">Click a different bar or period here to open it beside the current view.</div>}
     </div>
   )
 }
@@ -585,10 +709,12 @@ interface LeadChartProps {
   measureLabel: string
   picked?: Filter | null
   compact?: boolean
+  /** Size the whole chart, axis labels included, to the card instead of reserving a fixed gutter for them. */
+  fit?: boolean
   onGesture: (g: Gesture, immediate: boolean) => void
 }
 
-function LeadChart({ lead, measureLabel, picked, compact, onGesture }: LeadChartProps) {
+function LeadChart({ lead, measureLabel, picked, compact, fit, onGesture }: LeadChartProps) {
   const outer = useRef<HTMLDivElement>(null)
   const ref = useRef<HTMLDivElement>(null)
   const [width, setWidth] = useState(600)
@@ -604,10 +730,11 @@ function LeadChart({ lead, measureLabel, picked, compact, onGesture }: LeadChart
     // Measure the wrapper: vega-embed makes its own element inline-block (shrink-to-fit).
     const el = outer.current
     if (!el) return
-    const ro = new ResizeObserver(([e]) => setWidth(Math.max(280, Math.floor(e.contentRect.width) - 190)))
+    // fit: leave room only for the actions (…) button; otherwise reserve space for axis labels and titles.
+    const ro = new ResizeObserver(([e]) => setWidth(Math.max(fit ? 220 : 280, Math.floor(e.contentRect.width) - (fit ? 44 : 190))))
     ro.observe(el)
     return () => ro.disconnect()
-  }, [])
+  }, [fit])
 
   useEffect(() => {
     const el = ref.current
@@ -619,6 +746,7 @@ function LeadChart({ lead, measureLabel, picked, compact, onGesture }: LeadChart
     let spec: Record<string, unknown>
     try {
       spec = buildSpec(lead, measureLabel, width, { picked: pickedRef.current, compact })
+      if (fit) spec = { ...spec, autosize: { type: 'fit-x', contains: 'padding' } }
     } catch (e) {
       el.textContent = `Could not draw this view: ${(e as Error).message}`
       return
@@ -655,7 +783,7 @@ function LeadChart({ lead, measureLabel, picked, compact, onGesture }: LeadChart
     }
     // pickedKey stands in for picked, which is a fresh object on every render
     // oxlint-disable-next-line react-hooks/exhaustive-deps
-  }, [lead, measureLabel, width, pickedKey, compact])
+  }, [lead, measureLabel, width, pickedKey, compact, fit])
 
   return (
     <div ref={outer} className="inv-chart">
